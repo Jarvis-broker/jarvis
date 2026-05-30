@@ -7,6 +7,21 @@ import "./ActivationScreen.css";
 // miniApp. The bot checks subscription status, then shows / mints the key.
 const KEY_URL = "https://t.me/neurounit_club_bot?start=jarvis_key";
 
+// Reason codes returned by the Rust command (which mirrors the server's
+// /api/jarvis/verify reasons) mapped to a message the user can act on.
+const REASONS: Record<string, string> = {
+  bad_format: "Invalid format. Expected JRVS-XXXX-XXXX-XXXX.",
+  unknown_key: "Key not recognized. Get a fresh one from the club bot.",
+  subscription_expired: "Your club subscription has lapsed. Renew it in the bot to reactivate.",
+  machine_mismatch: "This key is already active on another Mac. Release the device in the bot’s miniApp first.",
+  revoked: "This key has been revoked. Contact the club.",
+  minter_not_configured: "Activation service is temporarily unavailable. Try again later.",
+  network: "Can’t reach the activation server. Check your internet connection.",
+  bad_request: "Activation failed. Try again.",
+  denied: "Activation failed. Try again.",
+  unknown: "Activation failed. Try again.",
+};
+
 type Phase = "idle" | "validating" | "saving" | "error" | "success";
 
 /**
@@ -60,19 +75,17 @@ export default function ActivationScreen({ onActivated }: { onActivated: () => v
     setPhase("validating");
     setError(null);
     try {
-      const ok = await invoke<boolean>("activation_validate_key", { key: fullKey });
-      if (!ok) {
-        setPhase("error");
-        setError("Invalid key. Check the format JRVS-XXXX-XXXX-XXXX.");
-        return;
-      }
+      // Server-side entitlement check (subscription live + binds this Mac).
+      // Resolves on success; throws a reason code string on failure.
+      await invoke("activation_validate_key", { key: fullKey });
       setPhase("saving");
       await invoke("activation_save_key", { key: fullKey });
       setPhase("success");
       setTimeout(onActivated, 350);
     } catch (e) {
+      const code = typeof e === "string" ? e : "unknown";
       setPhase("error");
-      setError(typeof e === "string" ? e : "Activation failed. Try again.");
+      setError(REASONS[code] ?? REASONS.unknown);
     }
   }, [complete, fullKey, onActivated, phase]);
 
