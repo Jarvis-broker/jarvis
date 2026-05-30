@@ -1,0 +1,87 @@
+# Build, sign (updater), and publish Jarvis to GitHub Releases.
+#
+# Trigger: push a tag like `v0.2.0` (or run manually). tauri-action reads the
+# version from client/src-tauri/tauri.conf.json and replaces __VERSION__ below.
+#
+# On success it produces, per platform:
+#   - the installer (.dmg / .app.tar.gz on macOS, .msi / .exe on Windows)
+#   - a signed updater artifact (.sig) verified against the pubkey in the app
+#   - a merged `latest.json` manifest — the file the app polls to auto-update
+#
+# Required repo secrets:
+#   TAURI_SIGNING_PRIVATE_KEY           contents of client/src-tauri/.tauri-signing/jarvis-updater.key
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  empty string for the current key (no password)
+#
+# Later: macOS notarization / Windows Authenticode signing.
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest # Apple Silicon
+            args: "--target aarch64-apple-darwin"
+            rust_target: aarch64-apple-darwin
+          - platform: macos-latest # Intel
+            args: "--target x86_64-apple-darwin"
+            rust_target: x86_64-apple-darwin
+          - platform: windows-latest
+            args: ""
+            rust_target: ""
+
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: client/src-tauri
+
+      - name: Install frontend deps
+        working-directory: client
+        run: bun install
+
+      - name: Build, sign & publish
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Updater signature (mandatory — verifies the downloaded bundle):
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # --- macOS notarization (enable later) ---
+          # APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          # APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          # APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          # APPLE_ID: ${{ secrets.APPLE_ID }}
+          # APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          # APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # --- Windows Authenticode (enable later) ---
+          # handled via tauri.conf.json bundle.windows.certificateThumbprint
+        with:
+          projectPath: client
+          tagName: v__VERSION__
+          releaseName: "Jarvis v__VERSION__"
+          releaseBody: "Автообновление подтянет это само. Ручная установка — из ассетов ниже."
+          releaseDraft: false
+          prerelease: false
+          args: ${{ matrix.args }}

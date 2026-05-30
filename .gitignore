@@ -1,0 +1,29 @@
+node_modules/
+target/
+dist/
+*.db
+*.db-wal
+*.db-shm
+.env
+.env.*
+!.env.example
+.DS_Store
+
+# Private keys & certs — NEVER commit
+*.key
+*.pem
+updater.key
+
+# Tauri updater private signing key — NEVER commit (path-agnostic after reorg)
+.tauri-signing/
+**/.tauri-signing/
+
+# Runtime-generated MCP launcher config (contains absolute local paths)
+client/mcp-server/jarvis-mcp.json
+
+# Local agent/orchestration tooling — not part of the project
+.claude-flow/
+**/.claude-flow/
+.swarm/
+.hive-mind/
+.ruflo/

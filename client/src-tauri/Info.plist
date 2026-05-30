@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Jarvis needs microphone access to hear voice commands.</string>
+    <key>NSCameraUsageDescription</key>
+    <string>Jarvis may use the camera for vision features.</string>
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>Jarvis needs screen recording access to look at your screen when you ask.</string>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>Jarvis uses AppleScript to control Apple apps (Notes, Music, Messages, etc).</string>
+    <key>NSContactsUsageDescription</key>
+    <string>Jarvis can search your Contacts when asked.</string>
+    <key>NSCalendarsUsageDescription</key>
+    <string>Jarvis may search your Calendar when asked.</string>
+    <key>NSRemindersUsageDescription</key>
+    <string>Jarvis may set Reminders when asked.</string>
+    <key>NSSystemAdministrationUsageDescription</key>
+    <string>Jarvis may run shell commands when asked.</string>
+</dict>
+</plist>

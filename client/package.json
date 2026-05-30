@@ -1,0 +1,37 @@
+{
+  "name": "jarvis-app",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "build:mac": "TAURI_SIGNING_PRIVATE_KEY=\"$(cat src-tauri/.tauri-signing/jarvis-updater.key)\" TAURI_SIGNING_PRIVATE_KEY_PASSWORD='' bun run tauri build && bash scripts/inject-info-plist.sh",
+    "postinject": "open src-tauri/target/release/bundle/macos/Jarvis.app"
+  },
+  "dependencies": {
+    "@google/genai": "^2.0.1",
+    "@huggingface/transformers": "^4.2.0",
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-opener": "^2",
+    "@tauri-apps/plugin-process": "^2",
+    "@tauri-apps/plugin-updater": "^2",
+    "@types/three": "^0.184.1",
+    "nanoid": "^5.1.11",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "reactflow": "^11.11.4",
+    "three": "^0.184.0",
+    "zustand": "^5.0.13"
+  },
+  "devDependencies": {
+    "@types/react": "^19.1.8",
+    "@types/react-dom": "^19.1.6",
+    "@vitejs/plugin-react": "^4.6.0",
+    "typescript": "~5.8.3",
+    "vite": "^7.0.4",
+    "@tauri-apps/cli": "^2"
+  }
+}
