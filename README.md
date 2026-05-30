@@ -115,7 +115,7 @@ code style, and the dev-mode bypass.
 
 ## License
 
-[MIT](LICENSE) © 2026 Aleksandr Remishevskiy
+[MIT](LICENSE) © 2026 Neurounit
 
 Activation key required on first run; source is fully open and may be forked,
 modified, and self-hosted under MIT terms.
