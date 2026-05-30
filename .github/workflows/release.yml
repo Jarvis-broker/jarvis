@@ -4,7 +4,7 @@
 # version from client/src-tauri/tauri.conf.json and replaces __VERSION__ below.
 #
 # On success it produces, per platform:
-#   - the installer (.dmg / .app.tar.gz on macOS, .msi / .exe on Windows)
+#   - the installer (.dmg / .app.tar.gz on macOS)
 #   - a signed updater artifact (.sig) verified against the pubkey in the app
 #   - a merged `latest.json` manifest — the file the app polls to auto-update
 #
@@ -12,7 +12,7 @@
 #   TAURI_SIGNING_PRIVATE_KEY           contents of client/src-tauri/.tauri-signing/jarvis-updater.key
 #   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  empty string for the current key (no password)
 #
-# Later: macOS notarization / Windows Authenticode signing.
+# Later: macOS notarization.
 name: Release
 
 on:
@@ -36,9 +36,6 @@ jobs:
           - platform: macos-latest # Intel
             args: "--target x86_64-apple-darwin"
             rust_target: x86_64-apple-darwin
-          - platform: windows-latest
-            args: ""
-            rust_target: ""
 
     runs-on: ${{ matrix.platform }}
     steps:
@@ -75,8 +72,6 @@ jobs:
           # APPLE_ID: ${{ secrets.APPLE_ID }}
           # APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           # APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          # --- Windows Authenticode (enable later) ---
-          # handled via tauri.conf.json bundle.windows.certificateThumbprint
         with:
           projectPath: client
           tagName: v__VERSION__
