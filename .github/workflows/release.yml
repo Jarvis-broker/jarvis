@@ -1,12 +1,15 @@
 # Build, sign (updater), and publish Jarvis to GitHub Releases.
 #
-# Trigger: push a tag like `v0.2.0` (or run manually). tauri-action reads the
+# Trigger: push a tag like `v0.2.1` (or run manually). tauri-action reads the
 # version from client/src-tauri/tauri.conf.json and replaces __VERSION__ below.
 #
-# On success it produces, per platform:
-#   - the installer (.dmg / .app.tar.gz on macOS)
+# On success it produces a single universal macOS build:
+#   - one installer  Jarvis_<ver>_universal.dmg  (runs on Apple Silicon + Intel)
 #   - a signed updater artifact (.sig) verified against the pubkey in the app
 #   - a merged `latest.json` manifest — the file the app polls to auto-update
+#
+# A universal binary carries both arm64 + x86_64 slices; macOS picks the right
+# one at launch, so there is nothing to choose at install time — one .dmg fits all.
 #
 # Required repo secrets:
 #   TAURI_SIGNING_PRIVATE_KEY           contents of client/src-tauri/.tauri-signing/jarvis-updater.key
@@ -26,18 +29,7 @@ permissions:
 
 jobs:
   release:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - platform: macos-latest # Apple Silicon
-            args: "--target aarch64-apple-darwin"
-            rust_target: aarch64-apple-darwin
-          - platform: macos-latest # Intel
-            args: "--target x86_64-apple-darwin"
-            rust_target: x86_64-apple-darwin
-
-    runs-on: ${{ matrix.platform }}
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -47,7 +39,8 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.rust_target }}
+          # Both targets are required to lipo a universal binary.
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
 
       - name: Rust cache
         uses: swatinem/rust-cache@v2
@@ -76,7 +69,7 @@ jobs:
           projectPath: client
           tagName: v__VERSION__
           releaseName: "Jarvis v__VERSION__"
-          releaseBody: "Автообновление подтянет это само. Ручная установка — из ассетов ниже."
+          releaseBody: "Один universal .dmg — работает и на Apple Silicon, и на Intel. Автообновление подтянет это само."
           releaseDraft: false
           prerelease: false
-          args: ${{ matrix.args }}
+          args: --target universal-apple-darwin
