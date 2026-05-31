@@ -27,7 +27,9 @@ use activation::{
 
 mod profiles;
 mod mcp_host;
+mod integrations;
 use mcp_host::McpHostState;
+use integrations::IntegrationsManager;
 
 // ---------------- shared state (sysmon polling) ----------------
 
@@ -1546,6 +1548,7 @@ pub fn run() {
         })
         .manage(SessionRegistry::new())
         .manage(McpHostState::new())
+        .manage(IntegrationsManager::new())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
@@ -1754,6 +1757,12 @@ pub fn run() {
             profiles::profile_set,
             profiles::profile_create,
             profiles::profile_delete,
+            integrations::integrations_list,
+            integrations::integrations_connect,
+            integrations::integrations_disconnect,
+            integrations::integrations_get_credential,
+            integrations::integrations_set_composio_key,
+            integrations::integrations_get_composio_key,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

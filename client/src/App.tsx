@@ -13,6 +13,7 @@ import { RevenueWidget } from "./components/RevenueWidget";
 import { MemoryView } from "./components/MemoryView";
 import { CentralControls } from "./components/CentralControls";
 import { AgentsView } from "./components/AgentsView";
+import { IntegrationsPanel } from "./components/IntegrationsPanel";
 import {
   ReactPipeline,
   type PipelineStage,
@@ -784,6 +785,12 @@ function App() {
       {view === "agents" && (
         <div className="view-page">
           <AgentsView />
+        </div>
+      )}
+
+      {view === "integrations" && (
+        <div className="view-page">
+          <IntegrationsPanel />
         </div>
       )}
 

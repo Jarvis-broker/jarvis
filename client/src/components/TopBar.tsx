@@ -8,7 +8,7 @@
 import { useEffect, useState } from "react";
 import { useStore } from "../lib/store";
 
-export type ViewTab = "main" | "memory" | "skills" | "agents" | "settings";
+export type ViewTab = "main" | "memory" | "skills" | "agents" | "integrations" | "settings";
 
 interface Props {
   view: ViewTab;
@@ -20,6 +20,7 @@ const TABS: { id: ViewTab; label: string }[] = [
   { id: "memory", label: "MEMORY" },
   { id: "skills", label: "SKILLS" },
   { id: "agents", label: "AGENTS" },
+  { id: "integrations", label: "INTEGRATIONS" },
   { id: "settings", label: "SETTINGS" },
 ];
 
