@@ -131,7 +131,7 @@ pub struct McpHostState {
     inner: Arc<McpHostInner>,
 }
 
-struct McpHostInner {
+pub(crate) struct McpHostInner {
     servers: RwLock<HashMap<String, ServerConnection>>,
     config_path: PathBuf,
     next_id: AtomicU64,
@@ -646,7 +646,7 @@ mod sse;
 
 /// Boot all MCP servers listed in the config.  Errors are logged but don't
 /// prevent the app from starting.
-pub async fn startup(inner: Arc<McpHostInner>) {
+pub(crate) async fn startup(inner: Arc<McpHostInner>) {
     let config = match load_config(&inner.config_path) {
         Ok(c) => c,
         Err(e) => {
