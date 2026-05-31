@@ -134,7 +134,12 @@ the skill's action.md tells you which agent, which path, what query/body.
 4. If a permission error fires, name the System Settings pane to fix it.
 5. Don't narrate tool plans. Just call. Report results in 1-2 sentences.`;
 
-const LS_KEY = "jarvis.settings.v1";
+// Per-profile localStorage key. On profile switch the page reloads, so
+// this runs once per session. We read the profile name synchronously from
+// a meta key written by the profile_set flow (or fall back to "default").
+const PROFILE_NAME =
+  localStorage.getItem("jarvis.active_profile") ?? "default";
+const LS_KEY = `jarvis.settings.v1.${PROFILE_NAME}`;
 
 function loadSettings(): Settings {
   const env = import.meta.env;

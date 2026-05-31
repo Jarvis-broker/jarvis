@@ -296,6 +296,60 @@ export function SettingsPanel({
   const setSetting = useStore((s) => s.setSetting);
   const resetSettings = useStore((s) => s.resetSettings);
 
+  // ── Profile management ──
+  const [profiles, setProfiles] = useState<string[]>([]);
+  const [activeProfile, setActiveProfile] = useState("default");
+  const [newProfileName, setNewProfileName] = useState("");
+
+  useEffect(() => {
+    if (open) {
+      invoke("profile_list")
+        .then((r: any) => {
+          setProfiles(r.profiles ?? []);
+          setActiveProfile(r.active ?? "default");
+        })
+        .catch(() => {});
+    }
+  }, [open]);
+
+  const switchProfile = async (name: string) => {
+    try {
+      await invoke("profile_set", { name });
+      // Persist to localStorage so store.ts picks the right settings key.
+      localStorage.setItem("jarvis.active_profile", name);
+      setActiveProfile(name);
+      // Reload page to re-initialize everything with new profile data.
+      window.location.reload();
+    } catch (e: any) {
+      alert(`Profile switch failed: ${e?.message ?? e}`);
+    }
+  };
+
+  const createProfile = async () => {
+    const name = newProfileName.trim();
+    if (!name) return;
+    try {
+      await invoke("profile_create", { name });
+      setNewProfileName("");
+      const r = (await invoke("profile_list")) as any;
+      setProfiles(r.profiles ?? []);
+    } catch (e: any) {
+      alert(`Create failed: ${e?.message ?? e}`);
+    }
+  };
+
+  const deleteProfile = async (name: string) => {
+    if (!confirm(`Delete profile "${name}"? All its skills, agents, and memory will be lost.`))
+      return;
+    try {
+      await invoke("profile_delete", { name });
+      const r = (await invoke("profile_list")) as any;
+      setProfiles(r.profiles ?? []);
+    } catch (e: any) {
+      alert(`Delete failed: ${e?.message ?? e}`);
+    }
+  };
+
   if (!open) return null;
 
   const isClaude = settings.brainMode === "claude";
@@ -312,6 +366,49 @@ export function SettingsPanel({
           </button>
         </div>
 
+        <div className="setting-section-label">Profile</div>
+        <label className="setting-row">
+          <span>Active profile</span>
+          <select
+            value={activeProfile}
+            onChange={(e) => switchProfile(e.target.value)}
+          >
+            {profiles.map((p) => (
+              <option key={p} value={p}>
+                {p}
+              </option>
+            ))}
+          </select>
+        </label>
+        <div className="skills-install-row">
+          <input
+            type="text"
+            placeholder="New profile name…"
+            value={newProfileName}
+            onChange={(e) => setNewProfileName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") createProfile();
+            }}
+          />
+          <button
+            className="btn-secondary"
+            onClick={createProfile}
+            disabled={!newProfileName.trim()}
+          >
+            + Create
+          </button>
+          {activeProfile !== "default" && (
+            <button
+              className="btn-secondary"
+              onClick={() => deleteProfile(activeProfile)}
+              style={{ marginLeft: 4 }}
+            >
+              🗑 Delete
+            </button>
+          )}
+        </div>
+
+        <div className="setting-section-label">Brain</div>
         <label className="setting-row">
           <span>Brain</span>
           <select

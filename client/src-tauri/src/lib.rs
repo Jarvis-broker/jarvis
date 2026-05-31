@@ -25,6 +25,7 @@ use activation::{
     activation_load_key, activation_save_key, activation_validate_key,
 };
 
+mod profiles;
 mod mcp_host;
 use mcp_host::McpHostState;
 
@@ -1656,6 +1657,10 @@ pub fn run() {
                 })
                 .build(app)?;
 
+            // Ensure active profile directories exist on startup.
+            let profile = profiles::active_name();
+            let _ = profiles::ensure_profile_dirs(&profile);
+
             // MCP Host — spawn configured MCP servers in background.
             let mcp_inner = app.state::<McpHostState>().inner_clone();
             tauri::async_runtime::spawn(async move {
@@ -1744,6 +1749,11 @@ pub fn run() {
             mcp_host::mcp_call_tool,
             mcp_host::mcp_reconnect,
             mcp_host::mcp_status,
+            profiles::profile_list,
+            profiles::profile_get,
+            profiles::profile_set,
+            profiles::profile_create,
+            profiles::profile_delete,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

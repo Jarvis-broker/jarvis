@@ -9,20 +9,14 @@ use rusqlite::{Connection, OpenFlags};
 use serde::Serialize;
 use serde_json::json;
 
+use crate::profiles;
+
 fn db_path() -> Result<String, String> {
-    let home = std::env::var("HOME").map_err(|e| e.to_string())?;
-    Ok(std::env::var("JARVIS_STATE_DB").unwrap_or(format!(
-        "{}/Code/jarvis/client/memory/state.db",
-        home
-    )))
+    profiles::db_path()
 }
 
 fn schema_path() -> Result<String, String> {
-    let home = std::env::var("HOME").map_err(|e| e.to_string())?;
-    Ok(std::env::var("JARVIS_SCHEMA_PATH").unwrap_or(format!(
-        "{}/Code/jarvis/client/memory/schema.sql",
-        home
-    )))
+    profiles::schema_path()
 }
 
 /// Create state.db (and its dir) if missing and apply schema.sql so the
@@ -584,7 +578,7 @@ pub fn skill_inspect(path: String) -> Result<serde_json::Value, String> {
 
 /// Install a skill from a local folder. Validates that the source contains
 /// a SKILL.md, derives the skill name from frontmatter (or folder basename),
-/// copies into `~/Code/jarvis/client/skills/<name>/`, then re-syncs the registry.
+/// copies into `~/.jarvis/profiles/{profile}/skills/<name>/`, then re-syncs the registry.
 #[tauri::command]
 pub fn skill_install_path(source: String) -> Result<serde_json::Value, String> {
     let src = std::path::Path::new(&source);
@@ -613,9 +607,7 @@ pub fn skill_install_path(source: String) -> Result<serde_json::Value, String> {
     if name.contains('/') || name.contains("..") {
         return Err(format!("invalid skill name: {}", name));
     }
-    let home = std::env::var("HOME").map_err(|e| e.to_string())?;
-    let dest_root = std::env::var("JARVIS_SKILLS_DIR")
-        .unwrap_or(format!("{}/Code/jarvis/client/skills", home));
+    let dest_root = profiles::skills_dir()?;
     let dest = std::path::Path::new(&dest_root).join(&name);
     if dest.exists() {
         return Err(format!(
@@ -648,9 +640,7 @@ pub fn skill_uninstall(name: String) -> Result<serde_json::Value, String> {
     if name.contains('/') || name.contains("..") || name.is_empty() {
         return Err(format!("invalid skill name: {}", name));
     }
-    let home = std::env::var("HOME").map_err(|e| e.to_string())?;
-    let root = std::env::var("JARVIS_SKILLS_DIR")
-        .unwrap_or(format!("{}/Code/jarvis/client/skills", home));
+    let root = profiles::skills_dir()?;
     let target = std::path::Path::new(&root).join(&name);
     if target.exists() {
         std::fs::remove_dir_all(&target).map_err(|e| e.to_string())?;
@@ -684,9 +674,11 @@ pub fn skill_set_enabled(name: String, enabled: bool) -> Result<(), String> {
 /// full manifest re-parse happens on next MCP server bootstrap).
 #[tauri::command]
 pub fn skill_sync_local() -> Result<serde_json::Value, String> {
-    let home = std::env::var("HOME").map_err(|e| e.to_string())?;
-    let root = std::env::var("JARVIS_SKILLS_DIR")
-        .unwrap_or(format!("{}/Code/jarvis/client/skills", home));
+    let root = profiles::skills_dir()?;
+    // Ensure skills directory exists for this profile.
+    if !std::path::Path::new(&root).exists() {
+        std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
+    }
     let conn = ensure_state_db()?;
     let entries = std::fs::read_dir(&root).map_err(|e| e.to_string())?;
     let now = std::time::SystemTime::now()

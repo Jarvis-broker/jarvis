@@ -124,11 +124,15 @@ struct McpHostInner {
 
 impl McpHostState {
     pub fn new() -> Self {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+        let config = crate::profiles::mcp_config_path()
+            .unwrap_or_else(|_| {
+                let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+                format!("{}/.jarvis/mcp-servers.json", home)
+            });
         Self {
             inner: Arc::new(McpHostInner {
                 servers: RwLock::new(HashMap::new()),
-                config_path: PathBuf::from(format!("{}/.jarvis/mcp-servers.json", home)),
+                config_path: PathBuf::from(config),
                 next_id: AtomicU64::new(1),
             }),
         }

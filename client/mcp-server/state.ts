@@ -20,8 +20,15 @@ import {
 
 const HOME = process.env.HOME ?? "";
 
+// Per-user profile support: data lives under ~/.jarvis/profiles/{name}/.
+// JARVIS_PROFILE_ROOT is set by the Rust host when spawning the MCP server;
+// if absent, fall back to the default profile.
+const PROFILE_ROOT =
+  process.env.JARVIS_PROFILE_ROOT ??
+  join(HOME, ".jarvis/profiles/default");
+
 export const DB_PATH =
-  process.env.JARVIS_STATE_DB ?? join(HOME, "Code/jarvis/client/memory/state.db");
+  process.env.JARVIS_STATE_DB ?? join(PROFILE_ROOT, "memory/state.db");
 
 export const SCHEMA_PATH =
   process.env.JARVIS_SCHEMA_PATH ??

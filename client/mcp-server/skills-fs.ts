@@ -9,8 +9,14 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 const HOME = process.env.HOME ?? "";
+
+// Per-user profile support: skills live under the active profile directory.
+const PROFILE_ROOT =
+  process.env.JARVIS_PROFILE_ROOT ??
+  join(HOME, ".jarvis/profiles/default");
+
 export const SKILLS_DIR =
-  process.env.JARVIS_SKILLS_DIR ?? join(HOME, "Code/jarvis/client/skills");
+  process.env.JARVIS_SKILLS_DIR ?? join(PROFILE_ROOT, "skills");
 
 export interface SkillManifest {
   name: string;
