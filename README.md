@@ -15,11 +15,13 @@ mic → STT → Gemini Live (fast) ─┬─→ simple command → tool → spok
 | Layer | What | Where |
 |---|---|---|
 | L1 Shell | Tauri 2 + React 19 + Vite | `client/` |
-| L2 Voice | webkitSpeechRecognition (STT) + Gemini Flash TTS | `client/src/lib/voice.ts` |
-| L3 Brain | `claude -p` long-lived subprocess via stream-json | `client/src-tauri/src/claude_session.rs` |
-| L4 Mac tools | MCP server (osascript + shell) | `client/mcp-server/` |
-| L5 Skills | agentskills.io format (SKILL.md + actions/) | `client/skills/` |
-| L6 Memory | SQLite + Obsidian vault (single source of truth) | `client/memory/` |
+| L2 Voice | Gemini Live (native audio) + TTS | `client/src/lib/gemini-live.ts` |
+| L3 Brain | `claude -p` subprocess or Gemini | `client/src-tauri/src/claude_session.rs` |
+| L4 MCP Host | Runtime tool discovery (stdio + HTTP/SSE) | `client/src-tauri/src/mcp_host/` |
+| L5 Mac tools | Built-in MCP server (osascript + shell) | `client/mcp-server/` |
+| L6 Skills | agentskills.io format (SKILL.md + actions/) | `client/skills/` |
+| L7 Memory | SQLite + Obsidian vault (single source of truth) | `client/memory/` |
+| L8 Profiles | Per-user data isolation | `~/.jarvis/profiles/{name}/` |
 
 ## Installation
 
@@ -76,6 +78,45 @@ cp client/.env.example client/.env.local
 # edit client/.env.local — VITE_GEMINI_API_KEY, model, voice
 ```
 
+### Adding MCP servers
+
+Jarvis discovers capabilities at runtime from MCP servers. To add a new
+server, edit `~/.jarvis/mcp-servers.json` (or per-profile:
+`~/.jarvis/profiles/{name}/mcp-servers.json`):
+
+```jsonc
+{
+  "mcpServers": {
+    // Local server via stdio (child process)
+    "jarvis-mac": {
+      "transport": "stdio",
+      "command": "bun",
+      "args": ["run", "{HOME}/Code/jarvis/client/mcp-server/index.ts"],
+      "env": {}
+    },
+    // Remote server via HTTP/SSE
+    "composio": {
+      "transport": "http",
+      "url": "https://mcp.composio.dev",
+      "headers": { "Authorization": "Bearer ${COMPOSIO_API_KEY}" }
+    }
+  }
+}
+```
+
+Servers with more than 50 tools automatically use the **meta-tool pattern**:
+instead of flooding the LLM with hundreds of declarations, Jarvis exposes
+`search_tools(query)` and `call_tool(name, args)` — the LLM searches first,
+then calls by name.
+
+### User profiles
+
+Each profile gets isolated `state.db`, `skills/`, and `mcp-servers.json`
+under `~/.jarvis/profiles/{name}/`. Switch profiles in Settings; the last
+active profile is remembered across launches.
+
+For details see [ARCHITECTURE.md](ARCHITECTURE.md).
+
 ## Dev mode (for contributors)
 
 Skip the activation gate while hacking on the source:
@@ -94,16 +135,25 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full contributor guide.
 
 ```
 jarvis/
-├── client/          ← Tauri app (Rust + React)
-│   ├── src/         ← React: components, screens, lib
-│   ├── src-tauri/   ← Rust: claude_session, activation, MCP wiring
-│   ├── mcp-server/  ← Local MCP: Mac-native tools
-│   ├── skills/      ← agentskills.io custom skills
-│   └── memory/      ← SQLite + embeddings
+├── client/                   ← Tauri app (Rust + React)
+│   ├── src/                  ← React: components, screens, lib
+│   │   ├── lib/tools.ts      ← Tool dispatch: built-in + MCP merge
+│   │   ├── lib/mcp-bridge.ts ← Frontend → Rust MCP bridge
+│   │   └── lib/store.ts      ← Zustand settings (per-profile)
+│   ├── src-tauri/src/
+│   │   ├── mcp_host/mod.rs   ← MCP Host: stdio + meta-tool
+│   │   ├── mcp_host/sse.rs   ← MCP Host: HTTP/SSE transport
+│   │   ├── profiles.rs       ← Per-user profile management
+│   │   ├── registry.rs       ← Skills + Agents DB access
+│   │   └── lib.rs            ← Tauri entry, command registration
+│   ├── mcp-server/           ← Built-in MCP: Mac-native tools
+│   ├── skills/               ← Default skill templates
+│   └── memory/               ← SQLite schema
 │
-├── packages/shared/ ← Shared types
+├── packages/shared/          ← Shared types
 ├── docs/
-├── LICENSE          ← MIT
+├── ARCHITECTURE.md           ← System architecture deep dive
+├── LICENSE                   ← MIT
 ├── CONTRIBUTING.md
 └── README.md
 ```

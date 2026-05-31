@@ -1,14 +1,18 @@
 //! MCP Host — runtime tool discovery via Model Context Protocol.
 //!
-//! Connects to MCP servers (stdio or future HTTP/SSE) listed in
+//! Connects to MCP servers (stdio or HTTP/SSE) listed in
 //! `~/.jarvis/mcp-servers.json` and merges their tool declarations into a
 //! single namespaced registry.  Frontend and other Rust modules call
 //! `mcp_list_tools` / `mcp_call_tool` to discover and invoke tools at runtime
 //! without hardcoding.
 //!
-//! The JSON-RPC 2.0 I/O loop follows the same pattern as `claude_session.rs`:
-//! one Tokio task per server owns the child process + stdin/stdout, and Tauri
-//! commands talk to it via an mpsc channel with oneshot replies.
+//! Large tool catalogs (>50 tools) automatically use the meta-tool pattern:
+//! `search_tools(query)` + `call_tool(name, args)` instead of individual
+//! declarations, keeping the LLM token budget manageable.
+//!
+//! Transports:
+//!   - **stdio** — spawns a child process, JSON-RPC over stdin/stdout
+//!   - **HTTP/SSE** — SSE stream for responses, HTTP POST for requests (see `sse.rs`)
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -42,7 +46,8 @@ pub enum McpServerEntry {
         #[serde(default)]
         env: HashMap<String, String>,
     },
-    /// Phase 4 — not yet implemented.
+    /// HTTP/SSE transport — connects via Server-Sent Events for responses
+    /// and HTTP POST for requests.
     #[serde(rename = "http")]
     Http {
         url: String,
@@ -100,9 +105,19 @@ pub struct ServerStatus {
     pub error: Option<String>,
 }
 
+/// Servers with more tools than this threshold use the meta-tool pattern:
+/// instead of exposing every tool, we expose `search_tools` + `call_tool`.
+const META_TOOL_THRESHOLD: usize = 50;
+
 struct ServerConnection {
     config: McpServerEntry,
+    /// Tools exposed to the LLM (may be meta-tools if catalog is large).
     tools: Vec<McpTool>,
+    /// Full tool catalog from the server (only differs from `tools` when
+    /// `meta_mode` is true — then `tools` holds 2 meta-tool declarations
+    /// while `all_tools` holds the real N tools for local search).
+    all_tools: Vec<McpTool>,
+    meta_mode: bool,
     tx: Option<mpsc::Sender<ToolCallRequest>>,
     connected: bool,
     error: Option<String>,
@@ -519,6 +534,113 @@ async fn mark_disconnected(name: &str, inner: &Arc<McpHostInner>, err: String) {
 }
 
 // ──────────────────────────────────────────────────────────────
+// Meta-tool pattern
+// ──────────────────────────────────────────────────────────────
+
+/// Build the 2 meta-tool declarations for a large catalog.
+fn meta_tool_declarations(namespace: &str) -> Vec<McpTool> {
+    vec![
+        McpTool {
+            namespace: namespace.into(),
+            name: "search_tools".into(),
+            qualified_name: format!("{}.search_tools", namespace),
+            description: format!(
+                "[MCP meta] Search the {} tool catalog by keyword. \
+                 Returns matching tool names and descriptions.",
+                namespace
+            ),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Keyword or intent to search for"
+                    }
+                },
+                "required": ["query"]
+            }),
+        },
+        McpTool {
+            namespace: namespace.into(),
+            name: "call_tool".into(),
+            qualified_name: format!("{}.call_tool", namespace),
+            description: format!(
+                "[MCP meta] Call any {} tool by name. Use search_tools first \
+                 to discover the right tool and its arguments.",
+                namespace
+            ),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "tool_name": {
+                        "type": "string",
+                        "description": "Exact tool name from search_tools results"
+                    },
+                    "arguments": {
+                        "type": "object",
+                        "description": "Arguments matching the tool's input schema"
+                    }
+                },
+                "required": ["tool_name"]
+            }),
+        },
+    ]
+}
+
+/// Check if a tool list should use meta-mode and return the appropriate
+/// exposed tools. Returns `(exposed_tools, all_tools, meta_mode)`.
+fn apply_meta_mode(namespace: &str, raw_tools: Vec<McpTool>) -> (Vec<McpTool>, Vec<McpTool>, bool) {
+    if raw_tools.len() > META_TOOL_THRESHOLD {
+        let meta = meta_tool_declarations(namespace);
+        (meta, raw_tools, true)
+    } else {
+        let all = raw_tools.clone();
+        (raw_tools, all, false)
+    }
+}
+
+/// Handle `search_tools` meta-call locally (no RPC to server).
+fn handle_search_tools(ns: &str, args: &Value, all_tools: &[McpTool]) -> McpToolResult {
+    let query = args
+        .get("query")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_lowercase();
+    let mut matches: Vec<&McpTool> = all_tools
+        .iter()
+        .filter(|t| {
+            t.name.to_lowercase().contains(&query)
+                || t.description.to_lowercase().contains(&query)
+        })
+        .collect();
+    matches.truncate(20);
+    let text = if matches.is_empty() {
+        format!("No {} tools match '{}'.", ns, query)
+    } else {
+        let list: Vec<String> = matches
+            .iter()
+            .map(|t| {
+                let schema = serde_json::to_string(&t.input_schema).unwrap_or_default();
+                format!("• {} — {}\n  args: {}", t.name, t.description, schema)
+            })
+            .collect();
+        format!("Found {} tools:\n{}", matches.len(), list.join("\n"))
+    };
+    McpToolResult {
+        content: vec![McpContent {
+            content_type: "text".into(),
+            text: Some(text),
+        }],
+        is_error: false,
+    }
+}
+
+// ──────────────────────────────────────────────────────────────
+// HTTP/SSE transport
+// ──────────────────────────────────────────────────────────────
+mod sse;
+
+// ──────────────────────────────────────────────────────────────
 // Startup — called once from .setup()
 // ──────────────────────────────────────────────────────────────
 
@@ -551,17 +673,25 @@ pub async fn startup(inner: Arc<McpHostInner>) {
                 {
                     Ok((tools, tx)) => {
                         let n = tools.len();
+                        let (exposed, all, meta) = apply_meta_mode(name, tools);
+                        let label = if meta {
+                            format!("{} tools (meta-mode: {} real)", n, all.len())
+                        } else {
+                            format!("{} tools", n)
+                        };
                         inner.servers.write().await.insert(
                             name.clone(),
                             ServerConnection {
                                 config: entry.clone(),
-                                tools,
+                                tools: exposed,
+                                all_tools: all,
+                                meta_mode: meta,
                                 tx: Some(tx),
                                 connected: true,
                                 error: None,
                             },
                         );
-                        eprintln!("[mcp_host] '{}' ready — {} tools", name, n);
+                        eprintln!("[mcp_host] '{}' ready — {}", name, label);
                     }
                     Err(e) => {
                         eprintln!("[mcp_host] '{}' failed: {}", name, e);
@@ -570,6 +700,8 @@ pub async fn startup(inner: Arc<McpHostInner>) {
                             ServerConnection {
                                 config: entry.clone(),
                                 tools: vec![],
+                                all_tools: vec![],
+                                meta_mode: false,
                                 tx: None,
                                 connected: false,
                                 error: Some(e),
@@ -578,11 +710,53 @@ pub async fn startup(inner: Arc<McpHostInner>) {
                     }
                 }
             }
-            McpServerEntry::Http { .. } => {
-                eprintln!(
-                    "[mcp_host] '{}' skipped — HTTP transport is Phase 4",
-                    name
-                );
+            McpServerEntry::Http { url, headers } => {
+                eprintln!("[mcp_host] connecting '{}' (HTTP/SSE: {})", name, url);
+                match sse::connect(
+                    name.clone(),
+                    url.clone(),
+                    headers.clone(),
+                    inner.clone(),
+                )
+                .await
+                {
+                    Ok((tools, all_tools, meta_mode, tx)) => {
+                        let n = all_tools.len();
+                        let label = if meta_mode {
+                            format!("{} tools (meta-mode)", n)
+                        } else {
+                            format!("{} tools", n)
+                        };
+                        inner.servers.write().await.insert(
+                            name.clone(),
+                            ServerConnection {
+                                config: entry.clone(),
+                                tools,
+                                all_tools,
+                                meta_mode,
+                                tx: Some(tx),
+                                connected: true,
+                                error: None,
+                            },
+                        );
+                        eprintln!("[mcp_host] '{}' ready — {}", name, label);
+                    }
+                    Err(e) => {
+                        eprintln!("[mcp_host] '{}' failed: {}", name, e);
+                        inner.servers.write().await.insert(
+                            name.clone(),
+                            ServerConnection {
+                                config: entry.clone(),
+                                tools: vec![],
+                                all_tools: vec![],
+                                meta_mode: false,
+                                tx: None,
+                                connected: false,
+                                error: Some(e),
+                            },
+                        );
+                    }
+                }
             }
         }
     }
@@ -627,16 +801,38 @@ async fn ensure_connected(name: &str, inner: &Arc<McpHostInner>) -> Result<(), S
                 inner.clone(),
             )
             .await?;
+            let (exposed, all, meta) = apply_meta_mode(name, tools);
             let mut servers = inner.servers.write().await;
             if let Some(conn) = servers.get_mut(name) {
-                conn.tools = tools;
+                conn.tools = exposed;
+                conn.all_tools = all;
+                conn.meta_mode = meta;
                 conn.tx = Some(tx);
                 conn.connected = true;
                 conn.error = None;
             }
             Ok(())
         }
-        McpServerEntry::Http { .. } => Err("HTTP transport not yet implemented".into()),
+        McpServerEntry::Http { url, headers } => {
+            eprintln!("[mcp_host] reconnecting '{}' (HTTP/SSE)", name);
+            let (tools, all_tools, meta_mode, tx) = sse::connect(
+                name.to_string(),
+                url.clone(),
+                headers.clone(),
+                inner.clone(),
+            )
+            .await?;
+            let mut servers = inner.servers.write().await;
+            if let Some(conn) = servers.get_mut(name) {
+                conn.tools = tools;
+                conn.all_tools = all_tools;
+                conn.meta_mode = meta_mode;
+                conn.tx = Some(tx);
+                conn.connected = true;
+                conn.error = None;
+            }
+            Ok(())
+        }
     }
 }
 
@@ -676,6 +872,47 @@ pub async fn mcp_call_tool(
 
     ensure_connected(ns, &state.inner).await?;
 
+    // ── Meta-tool interception ──
+    {
+        let servers = state.inner.servers.read().await;
+        if let Some(conn) = servers.get(ns) {
+            if conn.meta_mode {
+                if tool == "search_tools" {
+                    return Ok(handle_search_tools(ns, &arguments, &conn.all_tools));
+                }
+                if tool == "call_tool" {
+                    // Extract real tool name + args and fall through to normal dispatch.
+                    let real_name = arguments
+                        .get("tool_name")
+                        .and_then(|v| v.as_str())
+                        .ok_or("call_tool requires 'tool_name' string")?
+                        .to_string();
+                    let real_args = arguments
+                        .get("arguments")
+                        .cloned()
+                        .unwrap_or_else(|| json!({}));
+                    let tx = conn
+                        .tx
+                        .clone()
+                        .ok_or_else(|| format!("MCP server '{}' not connected", ns))?;
+                    drop(servers); // release read lock
+                    let (reply_tx, reply_rx) = oneshot::channel();
+                    tx.send(ToolCallRequest {
+                        tool_name: real_name,
+                        arguments: real_args,
+                        reply: reply_tx,
+                    })
+                    .await
+                    .map_err(|_| format!("channel to '{}' closed", ns))?;
+                    return reply_rx
+                        .await
+                        .map_err(|_| "reply channel dropped".to_string())?;
+                }
+            }
+        }
+    }
+
+    // ── Normal dispatch ──
     let tx = {
         let servers = state.inner.servers.read().await;
         let conn = servers
@@ -721,18 +958,21 @@ pub async fn mcp_reconnect(
                 .await
                 {
                     Ok((tools, tx)) => {
-                        let n = tools.len();
+                        let (exposed, all, meta) = apply_meta_mode(name, tools);
+                        let n = all.len();
                         state.inner.servers.write().await.insert(
                             name.clone(),
                             ServerConnection {
                                 config: entry.clone(),
-                                tools,
+                                tools: exposed,
+                                all_tools: all,
+                                meta_mode: meta,
                                 tx: Some(tx),
                                 connected: true,
                                 error: None,
                             },
                         );
-                        results.insert(name.clone(), json!({"ok": true, "tools": n}));
+                        results.insert(name.clone(), json!({"ok": true, "tools": n, "meta_mode": meta}));
                     }
                     Err(e) => {
                         results.insert(
@@ -742,11 +982,38 @@ pub async fn mcp_reconnect(
                     }
                 }
             }
-            McpServerEntry::Http { .. } => {
-                results.insert(
+            McpServerEntry::Http { url, headers } => {
+                match sse::connect(
                     name.clone(),
-                    json!({"ok": false, "error": "HTTP transport not yet implemented"}),
-                );
+                    url.clone(),
+                    headers.clone(),
+                    state.inner.clone(),
+                )
+                .await
+                {
+                    Ok((tools, all_tools, meta_mode, tx)) => {
+                        let n = all_tools.len();
+                        state.inner.servers.write().await.insert(
+                            name.clone(),
+                            ServerConnection {
+                                config: entry.clone(),
+                                tools,
+                                all_tools,
+                                meta_mode,
+                                tx: Some(tx),
+                                connected: true,
+                                error: None,
+                            },
+                        );
+                        results.insert(name.clone(), json!({"ok": true, "tools": n, "meta_mode": meta_mode}));
+                    }
+                    Err(e) => {
+                        results.insert(
+                            name.clone(),
+                            json!({"ok": false, "error": e}),
+                        );
+                    }
+                }
             }
         }
     }
