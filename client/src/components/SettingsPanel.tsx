@@ -479,17 +479,6 @@ export function SettingsPanel({
                 onChange={(e) => setSetting("claudePrompt", e.target.value)}
               />
             </label>
-            <label className="setting-row col">
-              <span>
-                Wake greeting · "проснись Джарвис"
-              </span>
-              <textarea
-                rows={10}
-                value={settings.wakeGreeting}
-                onChange={(e) => setSetting("wakeGreeting", e.target.value)}
-                placeholder="Что Джарвис должен сказать на wake-команду…"
-              />
-            </label>
           </>
         ) : (
           <>
@@ -525,17 +514,6 @@ export function SettingsPanel({
                 rows={8}
                 value={settings.systemPrompt}
                 onChange={(e) => setSetting("systemPrompt", e.target.value)}
-              />
-            </label>
-            <label className="setting-row col">
-              <span>
-                Wake greeting · "проснись Джарвис"
-              </span>
-              <textarea
-                rows={10}
-                value={settings.wakeGreeting}
-                onChange={(e) => setSetting("wakeGreeting", e.target.value)}
-                placeholder="Что Джарвис должен сказать на wake-команду…"
               />
             </label>
           </>

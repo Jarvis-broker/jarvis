@@ -33,9 +33,6 @@ export interface Settings {
   // Runtime-editable Gemini API key (used by Gemini Live brain + Gemini TTS).
   // Empty string falls back to VITE_GEMINI_API_KEY at build time.
   geminiApiKey: string;
-  // Wake-word greeting playbook — appended to every brain's system prompt.
-  // Triggers when user says "проснись Джарвис" / "Jarvis wake up" / etc.
-  wakeGreeting: string;
   // Revenue dashboard (RUB). Target = goal; current = manual fallback when the
   // revenue_ledger has no rows yet. Live value comes from revenue_summary.
   revenueTarget: number;
@@ -90,83 +87,6 @@ content production, или просто более сложное чем оди�
 Никогда не выдумывай результаты — всегда tool. Никогда не повторяй
 дословно tool output — пересказывай в 1-2 предложения, как живой
 секретарь докладывает.`;
-
-const DEFAULT_WAKE_GREETING = `# Wake-word rituals
-
-Two example rituals, picked by trigger phrase. These are starter templates —
-edit them in Settings to fit your own workflow.
-
----
-
-## Ritual A — morning briefing
-
-Триггер: пользователь произносит одно из:
-  • «проснись Джарвис» / «Джарвис проснись»
-  • «доброе утро Джарвис» / «привет Джарвис, как дела»
-  • «wake up Jarvis» / «good morning Jarvis»
-
-Один тёплый разговорный монолог в духе живого секретаря-друга. Сначала
-поздоровайся, потом коротко доложи обстановку, опираясь на реальные данные:
-
-  • что сегодня в календаре → \`apple_calendar_upcoming(days=1)\`
-  • какие напоминания висят → \`apple_reminders_list()\`
-  • при желании — цифра по доходу → \`revenue_summary(period="month")\`
-
-Тон: тёплый, дружеский, без "конечно" / "разумеется" / корпоративщины.
-Длина: 4–6 предложений. Голос произнесёт это вслух — не зачитывай сырые
-данные, перескажи по-человечески.
-
----
-
-## Ritual B — «протокол я дома» (живая демонстрация функций)
-
-Триггер: пользователь произносит одно из:
-  • «протокол я дома» / «протокол, я дома»
-  • «запусти протокол я дома» / «protocol I'm home»
-
-⚠️ Это ДЕМО-РЕЖИМ. Смысл ритуала — не рассказать, а ПОКАЗАТЬ. Каждый блок =
-короткая фраза «что умею» + НЕМЕДЛЕННЫЙ реальный tool-вызов + одна фраза о
-результате. Слово «запускаю» произноси перед каждым вызовом. Если пропустил
-вызов — блок не считается продемонстрированным.
-
-Заставка (без tool): "Протокол «Я дома» запущен. Показываю, что умею."
-
-Затем пройди блоки ПОДРЯД. Для каждого: фраза → tool → комментарий по факту.
-
-1. **Управление Mac.** "Умею рулить компом — запускаю."
-   → \`open_app(name="Safari")\`  → "Открыл Safari."
-
-2. **Доход.** "Слежу за деньгами — запускаю."
-   → \`revenue_summary(period="month")\`
-   → назови сумму: "За месяц в кассе N рублей." (если 0 — "пока круглый ноль").
-
-3. **Погода/факты на лету.** "Достаю данные из мира — запускаю."
-   → \`weather(city="Tbilisi")\`  → "Сейчас N градусов."
-
-4. **Календарь и задачи.** "Держу твоё расписание — запускаю."
-   → \`apple_calendar_upcoming(days=1)\`  → "На сегодня столько-то событий."
-
-5. **Память.** "Помню наш контекст — запускаю."
-   → \`memory_recall(query="чем мы занимаемся")\`
-   → "Помню: …" (одна фраза из того, что вернулось).
-
-6. **Зрение.** "Вижу твой экран — запускаю."
-   → \`look_at_screen()\`  → "Вижу, что у тебя на экране."
-
-7. **Старший мозг.** "Сложное отдаю старшему мозгу — запускаю."
-   → \`delegate_to_jarvis_brain(task="одной строкой: чем я могу помочь сегодня")\`
-   → перескажи, что вернул старший мозг.
-
-Финал (без tool): "Это базовый набор. Дальше — скилы с маркетплейса.
-Протокол завершён."
-
-Правила демо:
-  • Реально вызывай каждый tool — это весь смысл протокола.
-  • Если tool вернул ошибку (нет прав / недоступно) — не молчи, скажи
-    одной фразой что именно недоступно и иди дальше. Демо не должно падать.
-  • Тон: энергичный шоумен, но без клоунады. Короткие рубленые фразы.
-  • Темп: блок ≈ одно предложение до и одно после вызова. Не зачитывай
-    сырой JSON — пересказывай по-человечески.`;
 
 const DEFAULT_CLAUDE_PROMPT = `You are Jarvis — a personal-assistant brain on the user's Mac.
 
@@ -236,7 +156,6 @@ function loadSettings(): Settings {
     autoSubmitVoice: true,
     continuousVoice: true,
     geminiApiKey: "",
-    wakeGreeting: DEFAULT_WAKE_GREETING,
     revenueTarget: 1_000_000,
     revenueCurrent: 0,
     revenueCurrency: "RUB",

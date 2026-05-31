@@ -143,20 +143,12 @@ function App() {
     () => undefined,
   );
 
-  // Combine the main system-prompt with the wake-greeting playbook so the
-  // brain knows how to handle "проснись Джарвис" without polluting the main
-  // editable prompt textarea.
-  const composedSystemPrompt = (base: string) =>
-    settings.wakeGreeting?.trim()
-      ? `${base}\n\n${settings.wakeGreeting.trim()}`
-      : base;
-
   // -- (re)connect + start continuous mic --
   useEffect(() => {
     // Claude brain: text-only, no mic, no audio. Fast path.
     if (settings.brainMode === "claude") {
       const brain = new ClaudeBrain({
-        systemPrompt: composedSystemPrompt(settings.claudePrompt),
+        systemPrompt: settings.claudePrompt,
         model: settings.claudeModel,
       });
       claudeRef.current = brain;
@@ -247,7 +239,7 @@ function App() {
       apiKey,
       model: settings.modelName,
       voiceName: settings.voiceName,
-      systemInstruction: composedSystemPrompt(settings.systemPrompt),
+      systemInstruction: settings.systemPrompt,
       toolDeclarations,
       onAudio: (pcm) => {
         isSpeakingRef.current = true;
