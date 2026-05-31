@@ -26,7 +26,7 @@ import {
   isSpeechRecognitionAvailable,
 } from "./lib/voice";
 import { AudioIO } from "./lib/audio";
-import { dispatchTool, setLiveSession } from "./lib/tools";
+import { dispatchTool, setLiveSession, getToolDeclarations } from "./lib/tools";
 import { preloadModel as preloadMemoryModel, onModelEvent } from "./lib/memory";
 import { logEpisode } from "./lib/registry-client";
 import { useStore } from "./lib/store";
@@ -233,14 +233,22 @@ function App() {
     }
 
     setState("thinking");
+
     const audio = new AudioIO();
     audioRef.current = audio;
+
+    // Phase 2: fetch merged tool declarations (built-in + MCP) before
+    // opening the Gemini Live session.  MCP failures are non-fatal.
+    let cleanedUp = false;
+    getToolDeclarations().then((toolDeclarations) => {
+      if (cleanedUp) return; // unmounted before declarations arrived
 
     const session = new GeminiLiveSession({
       apiKey,
       model: settings.modelName,
       voiceName: settings.voiceName,
       systemInstruction: composedSystemPrompt(settings.systemPrompt),
+      toolDeclarations,
       onAudio: (pcm) => {
         isSpeakingRef.current = true;
         setState("speaking");
@@ -317,9 +325,17 @@ function App() {
       .catch((e) =>
         addMessage("error", `Connect failed: ${e?.message ?? e}`),
       );
+    }).catch((e) =>
+      addMessage("error", `Tool discovery failed: ${e?.message ?? e}`),
+    );
 
     return () => {
-      session.close();
+      cleanedUp = true;
+      const s = sessionRef.current;
+      if (s) {
+        s.close();
+        sessionRef.current = null;
+      }
       audio.stopMic();
       audio.closeSpeaker();
       setLiveSession(null);

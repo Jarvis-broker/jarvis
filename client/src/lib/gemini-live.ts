@@ -8,7 +8,6 @@
  *   4. on tool call, host computes responses then calls sendToolResponses()
  */
 import { GoogleGenAI, Modality, type Session } from "@google/genai";
-import { TOOL_DECLARATIONS } from "./tools";
 
 export interface ToolCall {
   id: string;
@@ -27,6 +26,8 @@ export interface LiveOptions {
   model: string;
   voiceName: string;
   systemInstruction: string;
+  /** Merged tool declarations (built-in + MCP). Fetched before connect(). */
+  toolDeclarations: any[];
   onAudio: (pcm: ArrayBuffer) => void;
   onTranscript: (role: "you" | "jarvis", text: string) => void;
   onToolCall: (calls: ToolCall[]) => Promise<ToolResponse[]>;
@@ -65,7 +66,7 @@ export class GeminiLiveSession {
         systemInstruction: {
           parts: [{ text: this.opts.systemInstruction }],
         },
-        tools: [{ functionDeclarations: TOOL_DECLARATIONS as any }],
+        tools: [{ functionDeclarations: this.opts.toolDeclarations as any }],
         sessionResumption: {},
         inputAudioTranscription: {},
         outputAudioTranscription: {},

@@ -1,6 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
 import { GoogleGenAI } from "@google/genai";
 import * as mem from "./memory";
+import {
+  getMcpDeclarations,
+  callMcpTool,
+  mergeDeclarations,
+  type GeminiFunctionDeclaration,
+} from "./mcp-bridge";
 
 export const TOOL_DECLARATIONS: any[] = [
   // ---------------- Memory & search ----------------
@@ -492,6 +498,25 @@ export function setLiveSession(s: GeminiLiveSession | null) {
 }
 
 // =========================================================
+// Dynamic tool declarations — built-in + MCP (Phase 2)
+// =========================================================
+
+/**
+ * Build the full set of Gemini function declarations: hardcoded built-in
+ * tools + whatever MCP servers currently expose.  Called once before each
+ * Gemini Live session is opened.
+ *
+ * MCP tool names are qualified (`server.tool`), so they never collide with
+ * the built-in names.  If MCP servers are down or not configured, this
+ * gracefully returns just the built-in set.
+ */
+export async function getToolDeclarations(): Promise<GeminiFunctionDeclaration[]> {
+  const mcpDecls = await getMcpDeclarations();
+  if (mcpDecls.length === 0) return TOOL_DECLARATIONS;
+  return mergeDeclarations(TOOL_DECLARATIONS, mcpDecls);
+}
+
+// =========================================================
 // TS-side handlers
 // =========================================================
 
@@ -885,6 +910,11 @@ export async function dispatchTool(
           calendar_name: args.calendar_name ?? null,
         });
       default:
+        // Phase 2: if the tool name contains a dot, it's an MCP qualified name.
+        // Route to the MCP host via mcp_call_tool.
+        if (name.includes(".")) {
+          return await callMcpTool(name, args);
+        }
         return { error: `Unknown tool: ${name}` };
     }
   } catch (e: any) {
