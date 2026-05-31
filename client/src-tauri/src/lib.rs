@@ -25,6 +25,9 @@ use activation::{
     activation_load_key, activation_save_key, activation_validate_key,
 };
 
+mod mcp_host;
+use mcp_host::McpHostState;
+
 // ---------------- shared state (sysmon polling) ----------------
 
 struct AppState {
@@ -1541,6 +1544,7 @@ pub fn run() {
             last_net_check: Mutex::new(None),
         })
         .manage(SessionRegistry::new())
+        .manage(McpHostState::new())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
@@ -1652,6 +1656,12 @@ pub fn run() {
                 })
                 .build(app)?;
 
+            // MCP Host — spawn configured MCP servers in background.
+            let mcp_inner = app.state::<McpHostState>().inner_clone();
+            tauri::async_runtime::spawn(async move {
+                mcp_host::startup(mcp_inner).await;
+            });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1729,6 +1739,11 @@ pub fn run() {
             activation_has_valid_key,
             activation_clear_key,
             activation_is_dev_mode,
+            // MCP Host: runtime tool discovery
+            mcp_host::mcp_list_tools,
+            mcp_host::mcp_call_tool,
+            mcp_host::mcp_reconnect,
+            mcp_host::mcp_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
