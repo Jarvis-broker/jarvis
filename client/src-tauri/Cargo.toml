@@ -34,7 +34,7 @@ base64 = "0.22"
 # Activation key gating: HMAC validation + local 0600 file storage +
 # server-side entitlement check (phone-home verify against the club bot).
 hmac = "0.12"
-ureq = "2"
+ureq = { version = "2", features = ["json"] }
 
 # A2 memory layer: SQLite + sqlite-vec extension
 rusqlite = { version = "0.31", features = ["bundled"] }
