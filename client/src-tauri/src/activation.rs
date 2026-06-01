@@ -1,26 +1,32 @@
 // Activation key gating + server-side entitlement (Option C).
 //
 // First-run model: the app shows an ActivationScreen until a valid key is in
-// the macOS Keychain AND the server confirms the key still maps to a live club
+// local app storage AND the server confirms the key still maps to a live club
 // subscription. Contributors set JARVIS_DEV_MODE=1 to skip entirely.
 //
 // Why phone-home? The key format alone is trivial to fake (the client can't
 // hold the minting secret). So the real gate lives on the server: POST
 // /api/jarvis/verify checks the key against the owner's subscription, binds it
 // to one Mac (machine_id), and can revoke it. The client caches the last
-// positive answer in Keychain so it keeps working offline for a grace window.
+// positive answer locally so it keeps working offline for a grace window.
+//
+// Storage: a single 0600 JSON file under the app's Application Support dir —
+// NOT the login Keychain. The Keychain bound access to the app's code
+// signature, so every ad-hoc rebuild / auto-update re-prompted for the
+// Keychain password. A plain file has no such ACL and never prompts.
 //
 // Key format: JRVS-XXXX-XXXX-XXXX where each XXXX is 4 uppercase hex chars.
 
 use hmac::{Hmac, Mac};
-use keyring::Entry;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::fs;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-const KEYCHAIN_SERVICE: &str = "ai.jarvis.app";
-const KEYCHAIN_USER: &str = "activation-key";
-const KEYCHAIN_ENTITLEMENT: &str = "entitlement";
+const APP_DIR: &str = "ai.jarvis.app";
+const STORE_FILE: &str = "activation.json";
 
 const DEFAULT_API_BASE: &str = "https://guid.neurounit.ai";
 /// Skip the network check when the last positive verify is younger than this.
@@ -32,15 +38,67 @@ fn dev_mode() -> bool {
     matches!(std::env::var("JARVIS_DEV_MODE").as_deref(), Ok(v) if !v.is_empty() && v != "0")
 }
 
-fn entry() -> Result<Entry, String> {
-    Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_USER).map_err(|e| format!("keychain entry: {e}"))
-}
-
 fn now_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+// ---------------- Local store (0600 file, no Keychain ACL) ----------------
+
+#[derive(Serialize, Deserialize, Default)]
+struct Store {
+    #[serde(default)]
+    key: Option<String>,
+    #[serde(default)]
+    entitlement: Option<Entitlement>,
+}
+
+/// `~/Library/Application Support/ai.jarvis.app/activation.json`.
+fn store_path() -> Result<PathBuf, String> {
+    let home = std::env::var("HOME").map_err(|_| "no HOME".to_string())?;
+    Ok(PathBuf::from(home)
+        .join("Library/Application Support")
+        .join(APP_DIR)
+        .join(STORE_FILE))
+}
+
+fn load_store() -> Store {
+    store_path()
+        .ok()
+        .and_then(|p| fs::read_to_string(p).ok())
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+fn save_store(store: &Store) -> Result<(), String> {
+    let path = store_path()?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("store dir: {e}"))?;
+    }
+    let json = serde_json::to_string(store).map_err(|e| format!("store encode: {e}"))?;
+    write_private(&path, &json)
+}
+
+/// Write with owner-only (0600) permissions so other local users can't read it.
+#[cfg(unix)]
+fn write_private(path: &Path, content: &str) -> Result<(), String> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut f = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)
+        .map_err(|e| format!("store open: {e}"))?;
+    f.write_all(content.as_bytes())
+        .map_err(|e| format!("store write: {e}"))
+}
+
+#[cfg(not(unix))]
+fn write_private(path: &Path, content: &str) -> Result<(), String> {
+    fs::write(path, content).map_err(|e| format!("store write: {e}"))
 }
 
 /// Pure format check. JRVS-XXXX-XXXX-XXXX, hex, uppercase.
@@ -142,7 +200,7 @@ fn server_verify(key: &str) -> Result<VerifyResp, ()> {
     }
 }
 
-// ---------------- Entitlement cache (Keychain) ----------------
+// ---------------- Entitlement cache (local store) ----------------
 
 #[derive(Serialize, Deserialize, Clone)]
 struct Entitlement {
@@ -158,20 +216,14 @@ impl Entitlement {
     }
 }
 
-fn entitlement_entry() -> Result<Entry, String> {
-    Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_ENTITLEMENT)
-        .map_err(|e| format!("keychain entitlement entry: {e}"))
-}
-
 fn save_entitlement(e: &Entitlement) {
-    if let (Ok(entry), Ok(json)) = (entitlement_entry(), serde_json::to_string(e)) {
-        let _ = entry.set_password(&json);
-    }
+    let mut s = load_store();
+    s.entitlement = Some(e.clone());
+    let _ = save_store(&s);
 }
 
 fn load_entitlement() -> Option<Entitlement> {
-    let json = entitlement_entry().ok()?.get_password().ok()?;
-    serde_json::from_str(&json).ok()
+    load_store().entitlement
 }
 
 // ---------------- Tauri commands ----------------
@@ -206,22 +258,17 @@ pub fn activation_save_key(key: String) -> Result<(), String> {
     if !validate_key_format(key.trim()) {
         return Err("invalid key format".into());
     }
-    entry()?
-        .set_password(key.trim())
-        .map_err(|e| format!("keychain save: {e}"))?;
-    Ok(())
+    let mut s = load_store();
+    s.key = Some(key.trim().to_string());
+    save_store(&s)
 }
 
 #[tauri::command]
 pub fn activation_load_key() -> Result<Option<String>, String> {
-    match entry()?.get_password() {
-        Ok(k) => Ok(Some(k)),
-        Err(keyring::Error::NoEntry) => Ok(None),
-        Err(e) => Err(format!("keychain load: {e}")),
-    }
+    Ok(load_store().key)
 }
 
-/// Launch gate. Valid = a well-formed key in Keychain that the server still
+/// Launch gate. Valid = a well-formed key in local storage that the server still
 /// honours. Fast path skips the network if we verified recently; offline falls
 /// back to the cached entitlement within the grace window.
 #[tauri::command]
@@ -229,10 +276,9 @@ pub fn activation_has_valid_key() -> Result<bool, String> {
     if dev_mode() {
         return Ok(true);
     }
-    let key = match entry()?.get_password() {
-        Ok(k) => k,
-        Err(keyring::Error::NoEntry) => return Ok(false),
-        Err(e) => return Err(format!("keychain check: {e}")),
+    let key = match load_store().key {
+        Some(k) => k,
+        None => return Ok(false),
     };
     if !validate_key_format(&key) {
         return Ok(false);
@@ -272,14 +318,15 @@ pub fn activation_has_valid_key() -> Result<bool, String> {
 
 #[tauri::command]
 pub fn activation_clear_key() -> Result<(), String> {
-    // Best-effort clear of the cached entitlement alongside the key.
-    if let Ok(e) = entitlement_entry() {
-        let _ = e.delete_credential();
-    }
-    match entry()?.delete_credential() {
+    // Drop the whole local store (key + cached entitlement) in one shot.
+    let path = match store_path() {
+        Ok(p) => p,
+        Err(_) => return Ok(()),
+    };
+    match fs::remove_file(&path) {
         Ok(()) => Ok(()),
-        Err(keyring::Error::NoEntry) => Ok(()),
-        Err(e) => Err(format!("keychain clear: {e}")),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("store clear: {e}")),
     }
 }
 
