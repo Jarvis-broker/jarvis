@@ -1,10 +1,11 @@
 /**
- * Integrations Catalog — static registry of available integrations.
+ * Integrations Catalog — dynamic registry powered by Composio API.
  *
- * Each entry describes an integration that Jarvis can connect to via MCP.
- * The catalog is purely display data; connection logic lives in Rust
- * (integrations.rs) and the McpHost.
+ * When the user has a Composio API key, fetches 500+ available apps
+ * dynamically. Falls back to a minimal static catalog when offline
+ * or before API key is configured.
  */
+import { invoke } from "@tauri-apps/api/core";
 
 export type AuthType = "api_key" | "oauth2" | "none";
 export type IntegrationCategory =
@@ -44,6 +45,8 @@ export interface IntegrationDef {
   composioSlug?: string;
   /** Auth field labels for API key integrations */
   authFields?: { name: string; label: string; placeholder?: string }[];
+  /** Whether this entry came from Composio API dynamically */
+  dynamic?: boolean;
 }
 
 export const CATEGORY_LABELS: Record<IntegrationCategory, string> = {
@@ -63,779 +66,355 @@ export const CATEGORY_LABELS: Record<IntegrationCategory, string> = {
   hr: "HR",
 };
 
-// Logo helper — uses cdn.simpleicons.org for most brands
+// ──────────────────────────────────────────────────────────────
+// Category mapping — Composio categories → our IntegrationCategory
+// ──────────────────────────────────────────────────────────────
+
+const CATEGORY_MAP: Record<string, IntegrationCategory> = {
+  productivity: "productivity",
+  "project management": "productivity",
+  "task management": "productivity",
+  "note taking": "productivity",
+  calendar: "productivity",
+  crm: "crm",
+  "sales & crm": "crm",
+  sales: "crm",
+  developer: "dev",
+  "developer tools": "dev",
+  "developer tool": "dev",
+  development: "dev",
+  "code & development": "dev",
+  devops: "dev",
+  "version control": "dev",
+  communication: "communication",
+  messaging: "communication",
+  email: "communication",
+  "video conferencing": "communication",
+  marketing: "marketing",
+  "email marketing": "marketing",
+  seo: "marketing",
+  advertising: "marketing",
+  analytics: "analytics",
+  "data & analytics": "analytics",
+  "business intelligence": "analytics",
+  monitoring: "analytics",
+  finance: "finance",
+  accounting: "finance",
+  payment: "finance",
+  payments: "finance",
+  billing: "finance",
+  support: "support",
+  "customer support": "support",
+  helpdesk: "support",
+  "help desk": "support",
+  storage: "storage",
+  "file storage": "storage",
+  "cloud storage": "storage",
+  "file management": "storage",
+  ai: "ai",
+  "artificial intelligence": "ai",
+  "machine learning": "ai",
+  social: "social",
+  "social media": "social",
+  commerce: "commerce",
+  ecommerce: "commerce",
+  "e-commerce": "commerce",
+  design: "design",
+  "design & creative": "design",
+  hr: "hr",
+  "human resources": "hr",
+  recruiting: "hr",
+  recruitment: "hr",
+};
+
+function mapCategory(categories?: string[]): IntegrationCategory {
+  if (!categories || categories.length === 0) return "productivity";
+  for (const cat of categories) {
+    const lower = cat.toLowerCase().trim();
+    if (CATEGORY_MAP[lower]) return CATEGORY_MAP[lower];
+  }
+  return "productivity";
+}
+
+// ──────────────────────────────────────────────────────────────
+// Color palette for dynamic entries without brand colors
+// ──────────────────────────────────────────────────────────────
+
+const PALETTE = [
+  "#6366F1", "#8B5CF6", "#EC4899", "#EF4444", "#F97316",
+  "#EAB308", "#22C55E", "#14B8A6", "#06B6D4", "#3B82F6",
+  "#A855F7", "#D946EF", "#F43F5E", "#FB923C", "#84CC16",
+];
+
+function colorFromSlug(slug: string): string {
+  let hash = 0;
+  for (let i = 0; i < slug.length; i++) {
+    hash = slug.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  return PALETTE[Math.abs(hash) % PALETTE.length];
+}
+
+// ──────────────────────────────────────────────────────────────
+// Well-known slugs → simpleicons mapping for high-quality logos
+// ──────────────────────────────────────────────────────────────
+
+const KNOWN_ICONS: Record<string, string> = {
+  notion: "notion", github: "github", gitlab: "gitlab", slack: "slack",
+  discord: "discord", trello: "trello", asana: "asana", linear: "linear",
+  jira: "jira", figma: "figma", canva: "canva", stripe: "stripe",
+  shopify: "shopify", hubspot: "hubspot", salesforce: "salesforce",
+  zendesk: "zendesk", intercom: "intercom", twilio: "twilio",
+  sendgrid: "sendgrid", mailchimp: "mailchimp", airtable: "airtable",
+  todoist: "todoist", clickup: "clickup", dropbox: "dropbox",
+  googledrive: "googledrive", googlesheets: "googlesheets",
+  googledocs: "googledocs", googlecalendar: "googlecalendar",
+  gmail: "gmail", youtube: "youtube", twitter: "x",
+  x: "x", instagram: "instagram", linkedin: "linkedin",
+  facebook: "facebook", tiktok: "tiktok", reddit: "reddit",
+  telegram: "telegram", whatsapp: "whatsapp", zoom: "zoom",
+  microsoftteams: "microsoftteams", outlook: "microsoftoutlook",
+  vercel: "vercel", netlify: "netlify", supabase: "supabase",
+  firebase: "firebase", mongodb: "mongodb", postgresql: "postgresql",
+  datadog: "datadog", sentry: "sentry", pagerduty: "pagerduty",
+  mixpanel: "mixpanel", amplitude: "amplitude", segment: "segment",
+  quickbooks: "quickbooks", xero: "xero", freshdesk: "freshdesk",
+  pipedrive: "pipedrive", typeform: "typeform", surveymonkey: "surveymonkey",
+  wordpress: "wordpress", webflow: "webflow", spotify: "spotify",
+  twitch: "twitch", medium: "medium", hackernews: "ycombinator",
+  wikipedia: "wikipedia", openai: "openai", anthropic: "anthropic",
+};
+
+function logoForSlug(slug: string, composioLogo?: string): string {
+  // Prefer Composio's own logo if available
+  if (composioLogo && composioLogo.startsWith("http")) return composioLogo;
+  // Map to simpleicons
+  const key = slug.toLowerCase().replace(/[-_\s]/g, "");
+  const icon = KNOWN_ICONS[key];
+  if (icon) return `https://cdn.simpleicons.org/${icon}`;
+  return "";
+}
+
+// ──────────────────────────────────────────────────────────────
+// Popular apps — manually curated for the "Popular" tab
+// ──────────────────────────────────────────────────────────────
+
+const POPULAR_SLUGS = new Set([
+  "notion", "gmail", "google_calendar", "google_docs", "google_sheets",
+  "google_drive", "slack", "github", "linear", "figma", "trello",
+  "asana", "airtable", "todoist", "hubspot", "salesforce", "stripe",
+  "shopify", "discord", "zoom", "jira", "clickup",
+]);
+
+// ──────────────────────────────────────────────────────────────
+// Convert Composio API app → IntegrationDef
+// ──────────────────────────────────────────────────────────────
+
+interface ComposioApp {
+  key?: string;
+  name?: string;
+  description?: string;
+  logo?: string;
+  categories?: string[];
+  appId?: string;
+  auth_schemes?: Array<{ auth_mode?: string }>;
+  // v1 fields
+  no_auth?: boolean;
+  testConnectors?: unknown[];
+}
+
+function composioAppToDef(app: ComposioApp): IntegrationDef {
+  const slug = app.key || app.appId || "unknown";
+  const name = app.name || slug;
+
+  // Determine auth type
+  let auth: AuthType = "oauth2"; // default for most Composio apps
+  if (app.no_auth === true) {
+    auth = "none";
+  } else if (app.auth_schemes && app.auth_schemes.length > 0) {
+    const mode = app.auth_schemes[0].auth_mode?.toLowerCase() || "";
+    if (mode.includes("api_key") || mode === "api_key") auth = "api_key";
+    else if (mode === "none" || mode === "no_auth") auth = "none";
+  }
+
+  return {
+    slug,
+    name,
+    description: app.description || "",
+    logo: logoForSlug(slug, app.logo),
+    color: colorFromSlug(slug),
+    category: mapCategory(app.categories),
+    auth,
+    popular: POPULAR_SLUGS.has(slug),
+    composioSlug: slug,
+    dynamic: true,
+  };
+}
+
+// ──────────────────────────────────────────────────────────────
+// Minimal static fallback — shown when no API key is set
+// ──────────────────────────────────────────────────────────────
+
 const si = (name: string) => `https://cdn.simpleicons.org/${name}`;
 
-export const INTEGRATIONS_CATALOG: IntegrationDef[] = [
-  // ── Productivity ──
+export const FALLBACK_CATALOG: IntegrationDef[] = [
   {
-    slug: "notion",
-    name: "Notion",
+    slug: "notion", name: "Notion",
     description: "Заметки, базы данных, управление проектами",
-    logo: si("notion"),
-    color: "#000000",
-    category: "productivity",
-    auth: "oauth2",
-    popular: true,
-    composioSlug: "notion",
+    logo: si("notion"), color: "#000000", category: "productivity",
+    auth: "oauth2", popular: true, composioSlug: "notion",
   },
   {
-    slug: "google-calendar",
-    name: "Google Calendar",
+    slug: "gmail", name: "Gmail",
+    description: "Электронная почта Google",
+    logo: si("gmail"), color: "#EA4335", category: "communication",
+    auth: "oauth2", popular: true, composioSlug: "gmail",
+  },
+  {
+    slug: "google_calendar", name: "Google Calendar",
     description: "Календарь и планирование встреч",
-    logo: si("googlecalendar"),
-    color: "#4285F4",
-    category: "productivity",
-    auth: "oauth2",
-    popular: true,
-    composioSlug: "googlecalendar",
+    logo: si("googlecalendar"), color: "#4285F4", category: "productivity",
+    auth: "oauth2", popular: true, composioSlug: "google_calendar",
   },
   {
-    slug: "google-docs",
-    name: "Google Docs",
+    slug: "google_docs", name: "Google Docs",
     description: "Создание и редактирование документов",
-    logo: si("googledocs"),
-    color: "#4285F4",
-    category: "productivity",
-    auth: "oauth2",
-    composioSlug: "googledocs",
+    logo: si("googledocs"), color: "#4285F4", category: "productivity",
+    auth: "oauth2", popular: true, composioSlug: "google_docs",
   },
   {
-    slug: "google-sheets",
-    name: "Google Sheets",
+    slug: "google_sheets", name: "Google Sheets",
     description: "Таблицы и анализ данных",
-    logo: si("googlesheets"),
-    color: "#0F9D58",
-    category: "productivity",
-    auth: "oauth2",
-    composioSlug: "googlesheets",
+    logo: si("googlesheets"), color: "#34A853", category: "productivity",
+    auth: "oauth2", popular: true, composioSlug: "google_sheets",
   },
   {
-    slug: "google-drive",
-    name: "Google Drive",
+    slug: "google_drive", name: "Google Drive",
     description: "Облачное хранилище файлов",
-    logo: si("googledrive"),
-    color: "#4285F4",
-    category: "productivity",
-    auth: "oauth2",
-    composioSlug: "googledrive",
+    logo: si("googledrive"), color: "#4285F4", category: "storage",
+    auth: "oauth2", popular: true, composioSlug: "google_drive",
   },
   {
-    slug: "todoist",
-    name: "Todoist",
-    description: "Управление задачами и списки",
-    logo: si("todoist"),
-    color: "#E44332",
-    category: "productivity",
-    auth: "oauth2",
-    composioSlug: "todoist",
+    slug: "slack", name: "Slack",
+    description: "Корпоративный мессенджер",
+    logo: si("slack"), color: "#4A154B", category: "communication",
+    auth: "oauth2", popular: true, composioSlug: "slack",
   },
   {
-    slug: "trello",
-    name: "Trello",
-    description: "Канбан-доски для управления проектами",
-    logo: si("trello"),
-    color: "#0052CC",
-    category: "productivity",
-    auth: "oauth2",
-    composioSlug: "trello",
-  },
-  {
-    slug: "asana",
-    name: "Asana",
-    description: "Управление проектами и задачами команды",
-    logo: si("asana"),
-    color: "#F06A6A",
-    category: "productivity",
-    auth: "oauth2",
-    composioSlug: "asana",
-  },
-  {
-    slug: "airtable",
-    name: "Airtable",
-    description: "Базы данных для команд с API",
-    logo: si("airtable"),
-    color: "#18BFFF",
-    category: "productivity",
-    auth: "api_key",
-    composioSlug: "airtable",
-    authFields: [{ name: "api_key", label: "API Key", placeholder: "pat..." }],
-  },
-  {
-    slug: "clickup",
-    name: "ClickUp",
-    description: "Управление проектами, задачами и временем",
-    logo: si("clickup"),
-    color: "#7B68EE",
-    category: "productivity",
-    auth: "api_key",
-    composioSlug: "clickup",
-    authFields: [{ name: "api_key", label: "API Key" }],
-  },
-  {
-    slug: "linear",
-    name: "Linear",
-    description: "Управление задачами для продуктовых команд",
-    logo: si("linear"),
-    color: "#5E6AD2",
-    category: "productivity",
-    auth: "api_key",
-    popular: true,
-    composioSlug: "linear",
-    authFields: [{ name: "api_key", label: "API Key" }],
-  },
-  {
-    slug: "jira",
-    name: "Jira",
-    description: "Управление проектами и баг-трекинг",
-    logo: si("jira"),
-    color: "#0052CC",
-    category: "productivity",
-    auth: "oauth2",
-    composioSlug: "jira",
-  },
-
-  // ── Dev ──
-  {
-    slug: "github",
-    name: "GitHub",
+    slug: "github", name: "GitHub",
     description: "Репозитории, PR, issues, CI/CD",
-    logo: si("github"),
-    color: "#181717",
-    category: "dev",
-    auth: "oauth2",
-    popular: true,
-    composioSlug: "github",
+    logo: si("github"), color: "#181717", category: "dev",
+    auth: "oauth2", popular: true, composioSlug: "github",
   },
   {
-    slug: "gitlab",
-    name: "GitLab",
-    description: "Репозитории и DevOps-конвейеры",
-    logo: si("gitlab"),
-    color: "#FC6D26",
-    category: "dev",
-    auth: "oauth2",
-    composioSlug: "gitlab",
+    slug: "linear", name: "Linear",
+    description: "Управление задачами для продуктовых команд",
+    logo: si("linear"), color: "#5E6AD2", category: "dev",
+    auth: "oauth2", popular: true, composioSlug: "linear",
   },
   {
-    slug: "vercel",
-    name: "Vercel",
-    description: "Деплой фронтенда и серверлесс",
-    logo: si("vercel"),
-    color: "#000000",
-    category: "dev",
-    auth: "api_key",
-    composioSlug: "vercel",
-    authFields: [{ name: "api_key", label: "API Token" }],
-  },
-  {
-    slug: "sentry",
-    name: "Sentry",
-    description: "Мониторинг ошибок и производительности",
-    logo: si("sentry"),
-    color: "#362D59",
-    category: "dev",
-    auth: "api_key",
-    composioSlug: "sentry",
-    authFields: [{ name: "api_key", label: "Auth Token" }],
-  },
-  {
-    slug: "datadog",
-    name: "Datadog",
-    description: "Мониторинг инфраструктуры и логов",
-    logo: si("datadog"),
-    color: "#632CA6",
-    category: "dev",
-    auth: "api_key",
-    composioSlug: "datadog",
-    authFields: [
-      { name: "api_key", label: "API Key" },
-      { name: "app_key", label: "Application Key" },
-    ],
-  },
-  {
-    slug: "supabase",
-    name: "Supabase",
-    description: "База данных, аутентификация, хранилище",
-    logo: si("supabase"),
-    color: "#3FCF8E",
-    category: "dev",
-    auth: "api_key",
-    authFields: [
-      { name: "url", label: "Project URL", placeholder: "https://xxx.supabase.co" },
-      { name: "api_key", label: "Service Role Key" },
-    ],
-  },
-  {
-    slug: "firebase",
-    name: "Firebase",
-    description: "Backend-сервисы от Google",
-    logo: si("firebase"),
-    color: "#FFCA28",
-    category: "dev",
-    auth: "api_key",
-    composioSlug: "firebase",
-    authFields: [{ name: "api_key", label: "Admin SDK Key (JSON)" }],
-  },
-
-  // ── Communication ──
-  {
-    slug: "slack",
-    name: "Slack",
-    description: "Сообщения, каналы, уведомления",
-    logo: si("slack"),
-    color: "#4A154B",
-    category: "communication",
-    auth: "oauth2",
-    popular: true,
-    composioSlug: "slack",
-  },
-  {
-    slug: "discord",
-    name: "Discord",
-    description: "Серверы, каналы, боты",
-    logo: si("discord"),
-    color: "#5865F2",
-    category: "communication",
-    auth: "api_key",
-    composioSlug: "discord",
-    authFields: [{ name: "bot_token", label: "Bot Token" }],
-  },
-  {
-    slug: "telegram",
-    name: "Telegram",
-    description: "Мессенджер: боты, каналы, группы",
-    logo: si("telegram"),
-    color: "#26A5E4",
-    category: "communication",
-    auth: "api_key",
-    popular: true,
-    composioSlug: "telegram",
-    authFields: [{ name: "bot_token", label: "Bot Token" }],
-  },
-  {
-    slug: "gmail",
-    name: "Gmail",
-    description: "Чтение, отправка и управление почтой",
-    logo: si("gmail"),
-    color: "#EA4335",
-    category: "communication",
-    auth: "oauth2",
-    popular: true,
-    composioSlug: "gmail",
-  },
-  {
-    slug: "outlook",
-    name: "Microsoft Outlook",
-    description: "Почта, календарь, контакты",
-    logo: si("microsoftoutlook"),
-    color: "#0078D4",
-    category: "communication",
-    auth: "oauth2",
-    composioSlug: "outlook",
-  },
-  {
-    slug: "zoom",
-    name: "Zoom",
-    description: "Видеозвонки, вебинары, записи",
-    logo: si("zoom"),
-    color: "#0B5CFF",
-    category: "communication",
-    auth: "oauth2",
-    composioSlug: "zoom",
-  },
-  {
-    slug: "whatsapp",
-    name: "WhatsApp Business",
-    description: "Бизнес-сообщения через WhatsApp API",
-    logo: si("whatsapp"),
-    color: "#25D366",
-    category: "communication",
-    auth: "api_key",
-    composioSlug: "whatsapp",
-    authFields: [{ name: "api_key", label: "API Token" }],
-  },
-
-  // ── CRM ──
-  {
-    slug: "hubspot",
-    name: "HubSpot",
-    description: "CRM, маркетинг, продажи, поддержка",
-    logo: si("hubspot"),
-    color: "#FF7A59",
-    category: "crm",
-    auth: "oauth2",
-    popular: true,
-    composioSlug: "hubspot",
-  },
-  {
-    slug: "salesforce",
-    name: "Salesforce",
-    description: "Корпоративная CRM и автоматизация",
-    logo: si("salesforce"),
-    color: "#00A1E0",
-    category: "crm",
-    auth: "oauth2",
-    composioSlug: "salesforce",
-  },
-  {
-    slug: "pipedrive",
-    name: "Pipedrive",
-    description: "CRM для отделов продаж",
-    logo: si("pipedrive"),
-    color: "#1A1A1A",
-    category: "crm",
-    auth: "api_key",
-    composioSlug: "pipedrive",
-    authFields: [{ name: "api_key", label: "API Token" }],
-  },
-  {
-    slug: "apollo",
-    name: "Apollo.io",
-    description: "Поиск лидов, обогащение данных, outreach",
-    logo: si("apollo"),
-    color: "#6F42C1",
-    category: "crm",
-    auth: "api_key",
-    composioSlug: "apollo",
-    authFields: [{ name: "api_key", label: "API Key" }],
-  },
-  {
-    slug: "intercom",
-    name: "Intercom",
-    description: "Чат для бизнеса и поддержки клиентов",
-    logo: si("intercom"),
-    color: "#6AFDEF",
-    category: "crm",
-    auth: "api_key",
-    composioSlug: "intercom",
-    authFields: [{ name: "api_key", label: "Access Token" }],
-  },
-
-  // ── Marketing ──
-  {
-    slug: "mailchimp",
-    name: "Mailchimp",
-    description: "Email-маркетинг и рассылки",
-    logo: si("mailchimp"),
-    color: "#FFE01B",
-    category: "marketing",
-    auth: "api_key",
-    composioSlug: "mailchimp",
-    authFields: [{ name: "api_key", label: "API Key" }],
-  },
-  {
-    slug: "sendgrid",
-    name: "SendGrid",
-    description: "Транзакционные и маркетинговые email",
-    logo: si("sendgrid"),
-    color: "#1A82E2",
-    category: "marketing",
-    auth: "api_key",
-    composioSlug: "sendgrid",
-    authFields: [{ name: "api_key", label: "API Key" }],
-  },
-  {
-    slug: "google-ads",
-    name: "Google Ads",
-    description: "Рекламные кампании в Google",
-    logo: si("googleads"),
-    color: "#4285F4",
-    category: "marketing",
-    auth: "oauth2",
-    composioSlug: "googleads",
-  },
-  {
-    slug: "facebook-ads",
-    name: "Facebook Ads",
-    description: "Управление рекламными кампаниями Meta",
-    logo: si("facebook"),
-    color: "#1877F2",
-    category: "marketing",
-    auth: "oauth2",
-    composioSlug: "facebookads",
-  },
-
-  // ── Social ──
-  {
-    slug: "twitter",
-    name: "X (Twitter)",
-    description: "Посты, комментарии, DM, аналитика",
-    logo: si("x"),
-    color: "#000000",
-    category: "social",
-    auth: "oauth2",
-    popular: true,
-    composioSlug: "twitter",
-  },
-  {
-    slug: "instagram",
-    name: "Instagram",
-    description: "Посты, сторис, аналитика",
-    logo: si("instagram"),
-    color: "#E4405F",
-    category: "social",
-    auth: "oauth2",
-    composioSlug: "instagram",
-  },
-  {
-    slug: "linkedin",
-    name: "LinkedIn",
-    description: "Профессиональная сеть и публикации",
-    logo: si("linkedin"),
-    color: "#0A66C2",
-    category: "social",
-    auth: "oauth2",
-    composioSlug: "linkedin",
-  },
-  {
-    slug: "youtube",
-    name: "YouTube",
-    description: "Загрузка видео, аналитика, комментарии",
-    logo: si("youtube"),
-    color: "#FF0000",
-    category: "social",
-    auth: "oauth2",
-    composioSlug: "youtube",
-  },
-
-  // ── Analytics ──
-  {
-    slug: "google-analytics",
-    name: "Google Analytics",
-    description: "Веб-аналитика и отчёты",
-    logo: si("googleanalytics"),
-    color: "#E37400",
-    category: "analytics",
-    auth: "oauth2",
-    composioSlug: "googleanalytics",
-  },
-  {
-    slug: "posthog",
-    name: "PostHog",
-    description: "Продуктовая аналитика с открытым кодом",
-    logo: si("posthog"),
-    color: "#1D4AFF",
-    category: "analytics",
-    auth: "api_key",
-    authFields: [
-      { name: "api_key", label: "Personal API Key" },
-      { name: "host", label: "Host URL", placeholder: "https://app.posthog.com" },
-    ],
-  },
-  {
-    slug: "mixpanel",
-    name: "Mixpanel",
-    description: "Продуктовая аналитика и воронки",
-    logo: si("mixpanel"),
-    color: "#7856FF",
-    category: "analytics",
-    auth: "api_key",
-    composioSlug: "mixpanel",
-    authFields: [{ name: "api_key", label: "Project Token" }],
-  },
-  {
-    slug: "amplitude",
-    name: "Amplitude",
-    description: "Поведенческая аналитика продукта",
-    logo: si("amplitude"),
-    color: "#0061FF",
-    category: "analytics",
-    auth: "api_key",
-    composioSlug: "amplitude",
-    authFields: [{ name: "api_key", label: "API Key" }],
-  },
-
-  // ── Finance ──
-  {
-    slug: "stripe",
-    name: "Stripe",
-    description: "Платежи, подписки, инвойсы",
-    logo: si("stripe"),
-    color: "#635BFF",
-    category: "finance",
-    auth: "api_key",
-    popular: true,
-    composioSlug: "stripe",
-    authFields: [{ name: "api_key", label: "Secret Key", placeholder: "sk_..." }],
-  },
-  {
-    slug: "quickbooks",
-    name: "QuickBooks",
-    description: "Бухгалтерия и финансовый учёт",
-    logo: si("quickbooks"),
-    color: "#2CA01C",
-    category: "finance",
-    auth: "oauth2",
-    composioSlug: "quickbooks",
-  },
-  {
-    slug: "brex",
-    name: "Brex",
-    description: "Корпоративные карты и расходы",
-    logo: "https://cdn.brandfetch.io/brex.com/w/128/h/128/symbol",
-    color: "#0D1117",
-    category: "finance",
-    auth: "api_key",
-    composioSlug: "brex",
-    authFields: [{ name: "api_key", label: "API Token" }],
-  },
-
-  // ── Support ──
-  {
-    slug: "zendesk",
-    name: "Zendesk",
-    description: "Тикеты поддержки и Help Center",
-    logo: si("zendesk"),
-    color: "#03363D",
-    category: "support",
-    auth: "api_key",
-    composioSlug: "zendesk",
-    authFields: [
-      { name: "subdomain", label: "Subdomain", placeholder: "your-company" },
-      { name: "api_key", label: "API Token" },
-      { name: "email", label: "Admin Email" },
-    ],
-  },
-  {
-    slug: "freshdesk",
-    name: "Freshdesk",
-    description: "Поддержка клиентов и тикет-система",
-    logo: si("freshdesk"),
-    color: "#2C9738",
-    category: "support",
-    auth: "api_key",
-    composioSlug: "freshdesk",
-    authFields: [
-      { name: "domain", label: "Domain", placeholder: "xxx.freshdesk.com" },
-      { name: "api_key", label: "API Key" },
-    ],
-  },
-  {
-    slug: "front",
-    name: "Front",
-    description: "Общий почтовый ящик для команды",
-    logo: "https://cdn.brandfetch.io/front.com/w/128/h/128/symbol",
-    color: "#FF4F64",
-    category: "support",
-    auth: "api_key",
-    composioSlug: "front",
-    authFields: [{ name: "api_key", label: "API Token" }],
-  },
-
-  // ── Storage ──
-  {
-    slug: "dropbox",
-    name: "Dropbox",
-    description: "Облачное хранилище и совместная работа",
-    logo: si("dropbox"),
-    color: "#0061FF",
-    category: "storage",
-    auth: "oauth2",
-    composioSlug: "dropbox",
-  },
-  {
-    slug: "aws-s3",
-    name: "Amazon S3",
-    description: "Объектное хранилище AWS",
-    logo: si("amazons3"),
-    color: "#569A31",
-    category: "storage",
-    auth: "api_key",
-    authFields: [
-      { name: "access_key", label: "Access Key ID" },
-      { name: "secret_key", label: "Secret Access Key" },
-      { name: "region", label: "Region", placeholder: "us-east-1" },
-    ],
-  },
-
-  // ── AI ──
-  {
-    slug: "openai",
-    name: "OpenAI",
-    description: "GPT, DALL-E, Whisper — AI-модели",
-    logo: si("openai"),
-    color: "#412991",
-    category: "ai",
-    auth: "api_key",
-    popular: true,
-    authFields: [{ name: "api_key", label: "API Key", placeholder: "sk-..." }],
-  },
-  {
-    slug: "anthropic",
-    name: "Anthropic",
-    description: "Claude — продвинутая языковая модель",
-    logo: si("anthropic"),
-    color: "#191919",
-    category: "ai",
-    auth: "api_key",
-    authFields: [{ name: "api_key", label: "API Key", placeholder: "sk-ant-..." }],
-  },
-  {
-    slug: "perplexity",
-    name: "Perplexity",
-    description: "AI-поиск с источниками",
-    logo: si("perplexity"),
-    color: "#1FB8CD",
-    category: "ai",
-    auth: "api_key",
-    authFields: [{ name: "api_key", label: "API Key" }],
-  },
-  {
-    slug: "replicate",
-    name: "Replicate",
-    description: "Запуск AI-моделей через API",
-    logo: "https://cdn.brandfetch.io/replicate.com/w/128/h/128/symbol",
-    color: "#000000",
-    category: "ai",
-    auth: "api_key",
-    authFields: [{ name: "api_key", label: "API Token" }],
-  },
-
-  // ── Commerce ──
-  {
-    slug: "shopify",
-    name: "Shopify",
-    description: "Управление интернет-магазином",
-    logo: si("shopify"),
-    color: "#7AB55C",
-    category: "commerce",
-    auth: "api_key",
-    composioSlug: "shopify",
-    authFields: [
-      { name: "shop", label: "Shop Name", placeholder: "my-store.myshopify.com" },
-      { name: "api_key", label: "Admin API Token" },
-    ],
-  },
-  {
-    slug: "woocommerce",
-    name: "WooCommerce",
-    description: "WordPress-магазин и управление товарами",
-    logo: si("woocommerce"),
-    color: "#96588A",
-    category: "commerce",
-    auth: "api_key",
-    authFields: [
-      { name: "url", label: "Store URL" },
-      { name: "consumer_key", label: "Consumer Key" },
-      { name: "consumer_secret", label: "Consumer Secret" },
-    ],
-  },
-
-  // ── Design ──
-  {
-    slug: "figma",
-    name: "Figma",
+    slug: "figma", name: "Figma",
     description: "Дизайн интерфейсов и прототипирование",
-    logo: si("figma"),
-    color: "#F24E1E",
-    category: "design",
-    auth: "api_key",
-    popular: true,
-    composioSlug: "figma",
-    authFields: [{ name: "api_key", label: "Personal Access Token" }],
+    logo: si("figma"), color: "#F24E1E", category: "design",
+    auth: "oauth2", popular: true, composioSlug: "figma",
   },
   {
-    slug: "canva",
-    name: "Canva",
-    description: "Графический дизайн и шаблоны",
-    logo: si("canva"),
-    color: "#00C4CC",
-    category: "design",
-    auth: "oauth2",
-    composioSlug: "canva",
-  },
-
-  // ── HR ──
-  {
-    slug: "bamboohr",
-    name: "BambooHR",
-    description: "Управление персоналом и HR",
-    logo: "https://cdn.brandfetch.io/bamboohr.com/w/128/h/128/symbol",
-    color: "#73C41D",
-    category: "hr",
-    auth: "api_key",
-    composioSlug: "bamboohr",
-    authFields: [
-      { name: "subdomain", label: "Subdomain" },
-      { name: "api_key", label: "API Key" },
-    ],
+    slug: "trello", name: "Trello",
+    description: "Канбан-доски для управления проектами",
+    logo: si("trello"), color: "#0052CC", category: "productivity",
+    auth: "oauth2", popular: true, composioSlug: "trello",
   },
   {
-    slug: "gusto",
-    name: "Gusto",
-    description: "Зарплата и управление персоналом",
-    logo: "https://cdn.brandfetch.io/gusto.com/w/128/h/128/symbol",
-    color: "#F45D48",
-    category: "hr",
-    auth: "oauth2",
-    composioSlug: "gusto",
-  },
-
-  // ── More Popular ──
-  {
-    slug: "zapier",
-    name: "Zapier",
-    description: "Автоматизация рабочих процессов",
-    logo: si("zapier"),
-    color: "#FF4A00",
-    category: "productivity",
-    auth: "api_key",
-    authFields: [{ name: "api_key", label: "API Key" }],
-  },
-  {
-    slug: "twilio",
-    name: "Twilio",
-    description: "SMS, звонки, WhatsApp API",
-    logo: si("twilio"),
-    color: "#F22F46",
-    category: "communication",
-    auth: "api_key",
-    composioSlug: "twilio",
-    authFields: [
-      { name: "account_sid", label: "Account SID" },
-      { name: "auth_token", label: "Auth Token" },
-    ],
-  },
-  {
-    slug: "gong",
-    name: "Gong",
-    description: "Аналитика разговоров с клиентами",
-    logo: "https://cdn.brandfetch.io/gong.io/w/128/h/128/symbol",
-    color: "#7C3AED",
-    category: "crm",
-    auth: "api_key",
-    composioSlug: "gong",
-    authFields: [{ name: "api_key", label: "API Key" }],
-  },
-  {
-    slug: "hackernews",
-    name: "Hacker News",
-    description: "Новости и обсуждения стартапов",
-    logo: si("ycombinator"),
-    color: "#F0652F",
-    category: "social",
-    auth: "none",
-    composioSlug: "hackernews",
-  },
-  {
-    slug: "wikipedia",
-    name: "Wikipedia",
-    description: "Поиск и чтение статей из Википедии",
-    logo: si("wikipedia"),
-    color: "#000000",
-    category: "productivity",
-    auth: "none",
-    composioSlug: "wikipedia",
-  },
-  {
-    slug: "weatherapi",
-    name: "Weather API",
-    description: "Прогноз погоды и исторические данные",
-    logo: "https://cdn.simpleicons.org/theweatherchannel",
-    color: "#0078D4",
-    category: "productivity",
-    auth: "api_key",
-    authFields: [{ name: "api_key", label: "API Key" }],
+    slug: "hubspot", name: "HubSpot",
+    description: "CRM, маркетинг и продажи",
+    logo: si("hubspot"), color: "#FF7A59", category: "crm",
+    auth: "oauth2", popular: true, composioSlug: "hubspot",
   },
 ];
+
+// ──────────────────────────────────────────────────────────────
+// Dynamic fetch — calls Rust backend which proxies to Composio API
+// ──────────────────────────────────────────────────────────────
+
+let _cachedApps: IntegrationDef[] | null = null;
+
+/**
+ * Fetch the full Composio catalog via the Rust backend.
+ * Caches in memory for the session lifetime.
+ * Falls back to the static catalog on error.
+ */
+export async function fetchDynamicCatalog(): Promise<IntegrationDef[]> {
+  if (_cachedApps) return _cachedApps;
+
+  try {
+    const resp = await invoke("integrations_fetch_composio_apps");
+    const data = resp as { items?: ComposioApp[] } | ComposioApp[];
+
+    // Composio v1 returns { items: [...] } or just an array.
+    const apps = Array.isArray(data)
+      ? data
+      : Array.isArray((data as any).items)
+        ? (data as any).items
+        : [];
+
+    if (apps.length === 0) {
+      console.warn("[catalog] Composio returned 0 apps, using fallback");
+      return FALLBACK_CATALOG;
+    }
+
+    const defs: IntegrationDef[] = apps.map(composioAppToDef);
+
+    // Sort: popular first, then alphabetically.
+    defs.sort((a, b) => {
+      if (a.popular && !b.popular) return -1;
+      if (!a.popular && b.popular) return 1;
+      return a.name.localeCompare(b.name);
+    });
+
+    _cachedApps = defs;
+    return defs;
+  } catch (e) {
+    console.warn("[catalog] Failed to fetch from Composio, using fallback:", e);
+    return FALLBACK_CATALOG;
+  }
+}
+
+/** Clear the cache — call after changing API key. */
+export function clearCatalogCache() {
+  _cachedApps = null;
+}
+
+/**
+ * Create a Composio session for the current profile.
+ * Returns the session info including MCP URL.
+ */
+export async function createComposioSession(): Promise<{
+  mcpUrl?: string;
+  sessionId?: string;
+}> {
+  try {
+    const resp = (await invoke("integrations_create_composio_session")) as any;
+    return {
+      mcpUrl: resp?.mcp?.url || resp?.mcpUrl,
+      sessionId: resp?.id || resp?.sessionId,
+    };
+  } catch (e) {
+    console.error("[catalog] Failed to create Composio session:", e);
+    throw e;
+  }
+}
+
+/** Check if a Composio session/MCP server is configured for this profile. */
+export async function getComposioSessionStatus(): Promise<{
+  hasSession: boolean;
+  mcpUrl: string;
+}> {
+  try {
+    const resp = (await invoke("integrations_composio_session_status")) as any;
+    return {
+      hasSession: resp?.hasSession ?? false,
+      mcpUrl: resp?.mcpUrl ?? "",
+    };
+  } catch {
+    return { hasSession: false, mcpUrl: "" };
+  }
+}

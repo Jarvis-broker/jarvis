@@ -1,15 +1,19 @@
 /**
  * IntegrationsPanel — browse, search, and connect external integrations.
  *
- * Shows a grid of available integrations from the static catalog.
- * Users can search, filter by category, and connect/disconnect
- * integrations with API key or OAuth flows.
+ * Dynamically fetches 500+ integrations from Composio API when the user
+ * has an API key. Falls back to a minimal static catalog otherwise.
+ * Users can search, filter by category, and connect/disconnect.
  */
 import { useEffect, useState, useMemo, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
-  INTEGRATIONS_CATALOG,
+  FALLBACK_CATALOG,
   CATEGORY_LABELS,
+  fetchDynamicCatalog,
+  clearCatalogCache,
+  createComposioSession,
+  getComposioSessionStatus,
   type IntegrationDef,
   type IntegrationCategory,
 } from "../lib/integrations-catalog";
@@ -37,6 +41,12 @@ export function IntegrationsPanel() {
   const [composioKey, setComposioKey] = useState<string | null>(null);
   const [showComposioSetup, setShowComposioSetup] = useState(false);
   const [composioKeyInput, setComposioKeyInput] = useState("");
+  const [catalog, setCatalog] = useState<IntegrationDef[]>(FALLBACK_CATALOG);
+  const [catalogLoading, setCatalogLoading] = useState(false);
+  const [sessionStatus, setSessionStatus] = useState<{
+    hasSession: boolean;
+    mcpUrl: string;
+  }>({ hasSession: false, mcpUrl: "" });
 
   // Load connection statuses on mount.
   const reload = useCallback(async () => {
@@ -50,24 +60,44 @@ export function IntegrationsPanel() {
     }
   }, []);
 
+  // Load dynamic catalog from Composio API.
+  const loadCatalog = useCallback(async () => {
+    setCatalogLoading(true);
+    try {
+      const apps = await fetchDynamicCatalog();
+      setCatalog(apps);
+    } catch {
+      setCatalog(FALLBACK_CATALOG);
+    } finally {
+      setCatalogLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     void reload();
-    // Also check for Composio API key.
+    // Check for Composio API key.
     invoke("integrations_get_composio_key")
-      .then((k) => setComposioKey(k as string | null))
+      .then((k) => {
+        const key = k as string | null;
+        setComposioKey(key);
+        // If we have a key, load dynamic catalog.
+        if (key) void loadCatalog();
+      })
       .catch(() => {});
-  }, [reload]);
+    // Check session status.
+    void getComposioSessionStatus().then(setSessionStatus);
+  }, [reload, loadCatalog]);
 
   // Derived: available categories from the catalog.
   const categories = useMemo(() => {
     const cats = new Set<IntegrationCategory>();
-    INTEGRATIONS_CATALOG.forEach((i) => cats.add(i.category));
+    catalog.forEach((i) => cats.add(i.category));
     return Array.from(cats).sort();
-  }, []);
+  }, [catalog]);
 
   // Filter the catalog.
   const filtered = useMemo(() => {
-    let items = INTEGRATIONS_CATALOG;
+    let items = catalog;
 
     if (tab === "popular") {
       items = items.filter((i) => i.popular);
@@ -90,7 +120,7 @@ export function IntegrationsPanel() {
     }
 
     return items;
-  }, [search, tab, category, statuses]);
+  }, [search, tab, category, statuses, catalog]);
 
   const connectedCount = statuses.size;
 
@@ -151,13 +181,35 @@ export function IntegrationsPanel() {
   const handleSaveComposioKey = async () => {
     if (!composioKeyInput.trim()) return;
     setBusy(true);
+    setError(null);
     try {
+      // 1. Save the API key.
       await invoke("integrations_set_composio_key", {
         apiKey: composioKeyInput.trim(),
       });
       setComposioKey("***");
       setShowComposioSetup(false);
       setComposioKeyInput("");
+
+      // 2. Clear cache and reload dynamic catalog.
+      clearCatalogCache();
+      await loadCatalog();
+
+      // 3. Auto-create a Composio session for this profile.
+      try {
+        const session = await createComposioSession();
+        if (session.mcpUrl) {
+          setSessionStatus({ hasSession: true, mcpUrl: session.mcpUrl });
+          // 4. Trigger MCP reconnect to pick up the new server.
+          try {
+            await invoke("mcp_reconnect");
+          } catch {
+            // Non-fatal — user can restart.
+          }
+        }
+      } catch (e) {
+        console.warn("Session creation failed (non-fatal):", e);
+      }
     } catch (e: any) {
       setError(e?.message ?? String(e));
     } finally {
@@ -184,6 +236,11 @@ export function IntegrationsPanel() {
           >
             {composioKey ? "✓ Composio" : "+ Composio API Key"}
           </button>
+          {sessionStatus.hasSession && (
+            <span className="composio-session-badge" title={sessionStatus.mcpUrl}>
+              ● MCP
+            </span>
+          )}
         </div>
       </div>
 
@@ -194,7 +251,11 @@ export function IntegrationsPanel() {
           <input
             type="text"
             className="integrations-search-input"
-            placeholder={`Поиск среди ${INTEGRATIONS_CATALOG.length} интеграций...`}
+            placeholder={
+              catalogLoading
+                ? "Загрузка каталога..."
+                : `Поиск среди ${catalog.length} интеграций...`
+            }
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
@@ -254,6 +315,23 @@ export function IntegrationsPanel() {
         </div>
       </div>
 
+      {/* Loading indicator */}
+      {catalogLoading && (
+        <div className="integrations-loading">
+          <span className="integrations-loading-spinner">⟳</span>
+          Загрузка каталога из Composio...
+        </div>
+      )}
+
+      {/* No API key hint */}
+      {!composioKey && !catalogLoading && (
+        <div className="integrations-hint">
+          <span className="integrations-hint-icon">💡</span>
+          Введите Composio API Key чтобы увидеть 500+ интеграций.
+          Без ключа доступны только основные.
+        </div>
+      )}
+
       {/* Grid */}
       <div className="integrations-grid">
         {filtered.map((def) => {
@@ -288,7 +366,7 @@ export function IntegrationsPanel() {
         })}
       </div>
 
-      {filtered.length === 0 && (
+      {filtered.length === 0 && !catalogLoading && (
         <div className="integrations-empty">
           <div className="integrations-empty-icon">∅</div>
           <div className="integrations-empty-text">
@@ -403,7 +481,7 @@ export function IntegrationsPanel() {
               <div>
                 <div className="integrations-modal-title">Composio API Key</div>
                 <div className="integrations-modal-desc">
-                  Нужен для OAuth-интеграций (Google, Slack, GitHub и др.)
+                  Нужен для OAuth-интеграций и доступа к 500+ сервисам
                 </div>
               </div>
             </div>
@@ -433,6 +511,10 @@ export function IntegrationsPanel() {
                 </a>{" "}
                 → Settings → API Keys
               </div>
+              <div className="integrations-field-hint" style={{ marginTop: 8 }}>
+                После сохранения Jarvis автоматически подключится к Composio
+                и загрузит полный каталог интеграций.
+              </div>
               {error && <div className="integrations-modal-error">{error}</div>}
               <div className="integrations-modal-actions">
                 <button
@@ -446,7 +528,7 @@ export function IntegrationsPanel() {
                   onClick={handleSaveComposioKey}
                   disabled={busy || !composioKeyInput.trim()}
                 >
-                  {busy ? "…" : "Сохранить"}
+                  {busy ? "Подключение…" : "Сохранить"}
                 </button>
               </div>
             </div>

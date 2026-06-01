@@ -1763,6 +1763,9 @@ pub fn run() {
             integrations::integrations_get_credential,
             integrations::integrations_set_composio_key,
             integrations::integrations_get_composio_key,
+            integrations::integrations_fetch_composio_apps,
+            integrations::integrations_create_composio_session,
+            integrations::integrations_composio_session_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

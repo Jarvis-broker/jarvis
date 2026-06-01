@@ -8,6 +8,7 @@
 //! Credentials are stored separately in Keychain to avoid leaking secrets.
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -268,6 +269,157 @@ pub async fn integrations_set_composio_key(
 #[tauri::command]
 pub async fn integrations_get_composio_key() -> Result<Option<String>, String> {
     Ok(keychain_get("composio_api_key"))
+}
+
+// ──────────────────────────────────────────────────────────────
+// Composio API — dynamic catalog + session creation
+// ──────────────────────────────────────────────────────────────
+
+const COMPOSIO_API_BASE: &str = "https://backend.composio.dev/api";
+
+/// Fetch the full list of available apps from Composio API.
+/// Returns a JSON array of app objects (key, name, description, logo, categories).
+#[tauri::command]
+pub async fn integrations_fetch_composio_apps(
+) -> Result<Value, String> {
+    let api_key = keychain_get("composio_api_key")
+        .ok_or_else(|| "Composio API key не найден. Введите его в настройках.".to_string())?;
+
+    // Fetch all apps — Composio v1 endpoint (paginated, get all)
+    let url = format!("{}/v1/apps", COMPOSIO_API_BASE);
+    let resp = ureq::get(&url)
+        .set("x-api-key", &api_key)
+        .call()
+        .map_err(|e| format!("Composio API error: {}", e))?;
+
+    let body: Value = resp
+        .into_json()
+        .map_err(|e| format!("parse apps response: {}", e))?;
+
+    Ok(body)
+}
+
+/// Create a Composio session for the current profile and return its MCP URL.
+/// The session is tied to `user_id = profile_name`, isolating OAuth connections.
+#[tauri::command]
+pub async fn integrations_create_composio_session(
+) -> Result<Value, String> {
+    let api_key = keychain_get("composio_api_key")
+        .ok_or_else(|| "Composio API key не найден".to_string())?;
+
+    // Use profile name as user_id for isolation.
+    let profile_name = crate::profiles::active_name();
+    let user_id = format!("jarvis-{}", profile_name);
+
+    let body = serde_json::json!({
+        "user_id": user_id,
+    });
+
+    let url = format!("{}/v3/tool-router/session", COMPOSIO_API_BASE);
+    let resp = ureq::post(&url)
+        .set("x-api-key", &api_key)
+        .set("Content-Type", "application/json")
+        .send_string(&body.to_string())
+        .map_err(|e| format!("Composio session error: {}", e))?;
+
+    let result: Value = resp
+        .into_json()
+        .map_err(|e| format!("parse session response: {}", e))?;
+
+    // If we got an MCP URL, auto-inject it into mcp-servers.json.
+    if let Some(mcp_url) = result.get("mcp")
+        .and_then(|m| m.get("url"))
+        .and_then(|u| u.as_str())
+    {
+        if let Err(e) = inject_composio_mcp(mcp_url) {
+            eprintln!("[integrations] failed to inject MCP URL: {}", e);
+        }
+    }
+
+    Ok(result)
+}
+
+/// Inject the Composio MCP URL into the profile's mcp-servers.json
+/// so that McpHost auto-connects to it on next startup/reconnect.
+fn inject_composio_mcp(mcp_url: &str) -> Result<(), String> {
+    let config_path = crate::profiles::mcp_config_path()
+        .unwrap_or_else(|_| {
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+            format!("{}/.jarvis/mcp-servers.json", home)
+        });
+
+    let path = std::path::PathBuf::from(&config_path);
+
+    // Load existing config or create empty.
+    let mut config: Value = if path.exists() {
+        let data = std::fs::read_to_string(&path)
+            .map_err(|e| format!("read config: {}", e))?;
+        serde_json::from_str(&data)
+            .map_err(|e| format!("parse config: {}", e))?
+    } else {
+        serde_json::json!({ "mcpServers": {} })
+    };
+
+    // Add or update the "composio" entry.
+    if let Some(servers) = config.get_mut("mcpServers").and_then(|s| s.as_object_mut()) {
+        servers.insert("composio".to_string(), serde_json::json!({
+            "transport": "http",
+            "url": mcp_url,
+            "headers": {}
+        }));
+    }
+
+    // Ensure parent directory exists.
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+
+    let json = serde_json::to_string_pretty(&config)
+        .map_err(|e| format!("serialize: {}", e))?;
+    std::fs::write(&path, json)
+        .map_err(|e| format!("write config: {}", e))?;
+
+    eprintln!("[integrations] injected Composio MCP URL into config: {}", mcp_url);
+    Ok(())
+}
+
+/// Get Composio session status — check if a session exists for this profile.
+#[tauri::command]
+pub async fn integrations_composio_session_status(
+) -> Result<Value, String> {
+    let config_path = crate::profiles::mcp_config_path()
+        .unwrap_or_else(|_| {
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+            format!("{}/.jarvis/mcp-servers.json", home)
+        });
+
+    let path = std::path::PathBuf::from(&config_path);
+    if !path.exists() {
+        return Ok(serde_json::json!({ "hasSession": false }));
+    }
+
+    let data = std::fs::read_to_string(&path)
+        .map_err(|e| format!("read: {}", e))?;
+    let config: Value = serde_json::from_str(&data)
+        .map_err(|e| format!("parse: {}", e))?;
+
+    let has_composio = config
+        .get("mcpServers")
+        .and_then(|s| s.get("composio"))
+        .is_some();
+
+    let url = config
+        .get("mcpServers")
+        .and_then(|s| s.get("composio"))
+        .and_then(|c| c.get("url"))
+        .and_then(|u| u.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    Ok(serde_json::json!({
+        "hasSession": has_composio,
+        "mcpUrl": url,
+    }))
 }
 
 fn chrono_now() -> String {

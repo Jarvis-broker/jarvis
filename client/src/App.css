@@ -3050,6 +3050,54 @@ select,
   color: var(--text-dim);
 }
 
+/* ── Loading & hints ── */
+
+.integrations-loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+.integrations-loading-spinner {
+  display: inline-block;
+  animation: spin 1s linear infinite;
+  font-size: 16px;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.integrations-hint {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  margin-bottom: 8px;
+  background: rgba(99, 102, 241, 0.08);
+  border: 1px solid rgba(99, 102, 241, 0.2);
+  border-radius: 8px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.integrations-hint-icon {
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.composio-session-badge {
+  font-size: 10px;
+  color: #22c55e;
+  margin-left: 8px;
+  opacity: 0.8;
+  letter-spacing: 0.5px;
+}
+
 /* ── Modal ── */
 
 .integrations-modal-overlay {
