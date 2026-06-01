@@ -14,6 +14,7 @@ import {
   clearCatalogCache,
   createComposioSession,
   getComposioSessionStatus,
+  connectPipedreamMcp,
   type IntegrationDef,
   type IntegrationCategory,
 } from "../lib/integrations-catalog";
@@ -151,11 +152,21 @@ export function IntegrationsPanel() {
         credentials[f.name] = formValues[f.name].trim();
       }
 
-      await invoke("integrations_connect", {
-        slug: connectModal.slug,
-        composioSlug: connectModal.composioSlug ?? null,
-        credentials,
-      });
+      // Special handling for Pipedream — inject MCP server config.
+      if (connectModal.slug === "pipedream") {
+        await connectPipedreamMcp(
+          credentials["api_key"] || "",
+          credentials["project_id"] || "",
+        );
+        // Trigger MCP reconnect to pick up the new server.
+        try { await invoke("mcp_reconnect"); } catch { /* non-fatal */ }
+      } else {
+        await invoke("integrations_connect", {
+          slug: connectModal.slug,
+          composioSlug: connectModal.composioSlug ?? null,
+          credentials,
+        });
+      }
 
       await reload();
       setConnectModal(null);

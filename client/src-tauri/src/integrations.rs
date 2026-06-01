@@ -533,6 +533,55 @@ pub async fn integrations_composio_session_status(
     }))
 }
 
+/// Generic: inject any MCP server into the profile's mcp-servers.json.
+/// Accepts name, transport ("stdio"|"http"), url, and optional headers.
+/// Used for both Composio and Pipedream (and any future MCP provider).
+#[tauri::command]
+pub async fn integrations_inject_mcp_server(
+    name: String,
+    transport: String,
+    url: String,
+    headers: Option<HashMap<String, String>>,
+) -> Result<(), String> {
+    let config_path = crate::profiles::mcp_config_path()
+        .unwrap_or_else(|_| {
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+            format!("{}/.jarvis/mcp-servers.json", home)
+        });
+
+    let path = std::path::PathBuf::from(&config_path);
+
+    let mut config: Value = if path.exists() {
+        let data = std::fs::read_to_string(&path)
+            .map_err(|e| format!("read config: {}", e))?;
+        serde_json::from_str(&data)
+            .map_err(|e| format!("parse config: {}", e))?
+    } else {
+        serde_json::json!({ "mcpServers": {} })
+    };
+
+    if let Some(servers) = config.get_mut("mcpServers").and_then(|s| s.as_object_mut()) {
+        let hdrs = headers.unwrap_or_default();
+        servers.insert(name.clone(), serde_json::json!({
+            "transport": transport,
+            "url": url,
+            "headers": hdrs
+        }));
+    }
+
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+
+    let json = serde_json::to_string_pretty(&config)
+        .map_err(|e| format!("serialize: {}", e))?;
+    std::fs::write(&path, json)
+        .map_err(|e| format!("write config: {}", e))?;
+
+    eprintln!("[integrations] injected MCP server '{}' → {}", name, url);
+    Ok(())
+}
+
 fn chrono_now() -> String {
     use std::time::SystemTime;
     let d = SystemTime::now()

@@ -2,8 +2,8 @@
  * SkillsPanel — list / enable / disable / re-sync skills.
  *
  * Skills metadata lives in state.db.skill_registry, kept in sync with
- * filesystem ~/Code/jarvis/skills/<name>/SKILL.md. The MCP server bootstraps
- * full manifest on every start; this panel can do a lightweight re-sync
+ * the per-profile skills/ folder. The MCP server bootstraps the full
+ * manifest on every start; this panel can do a lightweight re-sync
  * (name + version + path) from Rust without restarting the brain.
  */
 import { useEffect, useState } from "react";
@@ -170,7 +170,7 @@ export function SkillsPanel({ open, onClose, embedded = false }: Props) {
             className="btn-secondary"
             onClick={sync}
             disabled={busy}
-            title="Rescan ~/Code/jarvis/skills/ folder"
+            title="Rescan skills folder for this profile"
           >
             🔄 Sync from disk
           </button>

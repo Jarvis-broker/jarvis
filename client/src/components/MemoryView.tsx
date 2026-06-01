@@ -5,8 +5,7 @@
  *   - durable facts (memory_facts) — what Jarvis remembers about the user
  *   - episodes (memory_episodes) — past conversation turns
  *   - vault stats + re-index trigger
- *
- * Read-only for now; manual memory_save / memory_forget can be added later.
+ *   - manual memory_save / memory_forget for fact management
  */
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -17,11 +16,23 @@ import {
 
 type Period = "today" | "yesterday" | "week" | "month";
 
+interface MemoryFact {
+  id: string;
+  text: string;
+  type_: string;
+  source: string;
+  tags: string;
+}
+
 export function MemoryView() {
   const [episodes, setEpisodes] = useState<EpisodeRow[]>([]);
   const [period, setPeriod] = useState<Period>("today");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  const [facts, setFacts] = useState<MemoryFact[]>([]);
+  const [factsQuery, setFactsQuery] = useState("");
+  const [memStats, setMemStats] = useState<Record<string, number>>({});
+  const [activeSection, setActiveSection] = useState<"episodes" | "facts">("episodes");
 
   const reload = async () => {
     try {
@@ -29,6 +40,37 @@ export function MemoryView() {
       setEpisodes(r.episodes);
     } catch (e: any) {
       setMsg(e?.message ?? String(e));
+    }
+    // Load memory stats
+    try {
+      const stats = (await invoke("mem_stats")) as any;
+      if (stats?.by_type) setMemStats(stats.by_type);
+    } catch { /* non-fatal */ }
+  };
+
+  const searchFacts = async (query?: string) => {
+    const q = (query ?? factsQuery).trim();
+    if (!q) { setFacts([]); return; }
+    try {
+      const hits = (await invoke("mem_fts_search", {
+        query: q,
+        typeFilter: null,
+        top: 50,
+      })) as MemoryFact[];
+      setFacts(hits);
+    } catch (e: any) {
+      setMsg(`Search failed: ${e?.message ?? e}`);
+    }
+  };
+
+  const forgetFact = async (id: string) => {
+    try {
+      await invoke("mem_forget", { id });
+      setFacts((prev) => prev.filter((f) => f.id !== id));
+      setMsg("Fact forgotten ✓");
+      setTimeout(() => setMsg(null), 2000);
+    } catch (e: any) {
+      setMsg(`Forget failed: ${e?.message ?? e}`);
     }
   };
 
@@ -85,10 +127,10 @@ export function MemoryView() {
     <div className="memory-view">
       <h2 className="page-title">◈ MEMORY</h2>
       <p className="page-subtitle">
-        Live view of <code>state.db</code> — durable facts, conversation
-        episodes, and indexed Obsidian vault chunks.
+        Durable facts, conversation episodes, and indexed Obsidian vault.
       </p>
 
+      {/* Stats row */}
       <div className="mem-stats-row">
         <div className="mem-stat">
           <div className="mem-stat-label">EPISODES · {period}</div>
@@ -104,80 +146,184 @@ export function MemoryView() {
             {(totalDuration / 1000).toFixed(1)}s
           </div>
         </div>
+        {Object.keys(memStats).length > 0 && (
+          <div className="mem-stat">
+            <div className="mem-stat-label">DB ROWS</div>
+            <div className="mem-stat-value">
+              {Object.values(memStats).reduce((a, b) => a + b, 0)}
+            </div>
+          </div>
+        )}
         <div className="mem-stat actions">
           <button
             className="btn-secondary"
             onClick={indexVault}
             disabled={busy}
-            title="Walk ~/Code/Obsidian/**/*.md, chunk + embed, upsert into vault_chunks"
+            title="Walk Obsidian vault, chunk + embed, upsert into memory"
           >
             🧠 Re-index vault
           </button>
-          <button
-            className="btn-secondary"
-            onClick={reload}
-            disabled={busy}
-          >
+          <button className="btn-secondary" onClick={reload} disabled={busy}>
             ⟳ Reload
           </button>
         </div>
       </div>
 
-      <div className="mem-period-row">
-        {(["today", "yesterday", "week", "month"] as Period[]).map((p) => (
-          <button
-            key={p}
-            className={`mem-period-pill ${period === p ? "active" : ""}`}
-            onClick={() => setPeriod(p)}
-          >
-            {p.toUpperCase()}
-          </button>
-        ))}
+      {/* Section tabs */}
+      <div className="mem-section-tabs">
+        <button
+          className={`mem-section-tab ${activeSection === "episodes" ? "active" : ""}`}
+          onClick={() => setActiveSection("episodes")}
+        >
+          Эпизоды
+        </button>
+        <button
+          className={`mem-section-tab ${activeSection === "facts" ? "active" : ""}`}
+          onClick={() => setActiveSection("facts")}
+        >
+          Факты и записи
+        </button>
       </div>
 
       {msg && <div className="mem-msg">{msg}</div>}
 
-      <div className="mem-episodes">
-        {filtered.length === 0 && (
-          <div className="agents-hint dim">no episodes in this window</div>
-        )}
-        {filtered.map((e) => {
-          const d = new Date(e.ts * 1000);
-          const time = d.toLocaleTimeString([], {
-            hour: "2-digit",
-            minute: "2-digit",
-          });
-          return (
-            <div key={e.id} className="mem-episode">
-              <div className="mem-ep-head">
-                <span className="mem-ep-time">{time}</span>
-                <span className="mem-ep-channel">
-                  {e.channel}
-                  {e.agent ? ` · ${e.agent}` : ""}
+      {/* ── Episodes section ── */}
+      {activeSection === "episodes" && (
+        <>
+          <div className="mem-period-row">
+            {(["today", "yesterday", "week", "month"] as Period[]).map((p) => (
+              <button
+                key={p}
+                className={`mem-period-pill ${period === p ? "active" : ""}`}
+                onClick={() => setPeriod(p)}
+              >
+                {p.toUpperCase()}
+              </button>
+            ))}
+          </div>
+
+          <div className="mem-episodes">
+            {filtered.length === 0 && (
+              <div className="agents-hint dim">no episodes in this window</div>
+            )}
+            {filtered.map((e) => {
+              const d = new Date(e.ts * 1000);
+              const time = d.toLocaleTimeString([], {
+                hour: "2-digit",
+                minute: "2-digit",
+              });
+              return (
+                <div key={e.id} className="mem-episode">
+                  <div className="mem-ep-head">
+                    <span className="mem-ep-time">{time}</span>
+                    <span className="mem-ep-channel">
+                      {e.channel}
+                      {e.agent ? ` · ${e.agent}` : ""}
+                    </span>
+                    {e.duration_ms != null && (
+                      <span className="mem-ep-dur">
+                        {(e.duration_ms / 1000).toFixed(1)}s
+                      </span>
+                    )}
+                    {e.cost_usd != null && e.cost_usd > 0 && (
+                      <span className="mem-ep-cost">
+                        ${e.cost_usd.toFixed(4)}
+                      </span>
+                    )}
+                  </div>
+                  {e.user_text && (
+                    <div className="mem-ep-line you">
+                      <span className="mem-ep-tag">YOU</span> {e.user_text}
+                    </div>
+                  )}
+                  {e.jarvis_text && (
+                    <div className="mem-ep-line jarvis">
+                      <span className="mem-ep-tag">JARVIS</span>{" "}
+                      {e.jarvis_text}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </>
+      )}
+
+      {/* ── Facts section ── */}
+      {activeSection === "facts" && (
+        <div className="mem-facts-section">
+          <div className="mem-facts-search-row">
+            <input
+              type="text"
+              className="mem-facts-search-input"
+              placeholder="Поиск по памяти... (FTS)"
+              value={factsQuery}
+              onChange={(e) => setFactsQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") void searchFacts();
+              }}
+            />
+            <button
+              className="btn-primary"
+              onClick={() => searchFacts()}
+              disabled={!factsQuery.trim()}
+            >
+              Поиск
+            </button>
+          </div>
+
+          {/* Stats badges */}
+          {Object.keys(memStats).length > 0 && (
+            <div className="mem-facts-type-badges">
+              {Object.entries(memStats).map(([type_, count]) => (
+                <span key={type_} className="mem-facts-badge">
+                  {type_}: {count}
                 </span>
-                {e.duration_ms != null && (
-                  <span className="mem-ep-dur">
-                    {(e.duration_ms / 1000).toFixed(1)}s
-                  </span>
-                )}
-                {e.cost_usd != null && e.cost_usd > 0 && (
-                  <span className="mem-ep-cost">${e.cost_usd.toFixed(4)}</span>
+              ))}
+            </div>
+          )}
+
+          <div className="mem-facts-list">
+            {facts.length === 0 && factsQuery && (
+              <div className="agents-hint dim">
+                Ничего не найдено. Попробуйте другой запрос.
+              </div>
+            )}
+            {facts.length === 0 && !factsQuery && (
+              <div className="agents-hint dim">
+                Введите запрос для поиска по всем типам памяти.
+              </div>
+            )}
+            {facts.map((f) => (
+              <div key={f.id} className="mem-fact-card">
+                <div className="mem-fact-head">
+                  <span className="mem-fact-type">{f.type_}</span>
+                  {f.source && (
+                    <span className="mem-fact-source">{f.source}</span>
+                  )}
+                  <button
+                    className="mem-fact-forget-btn"
+                    onClick={() => forgetFact(f.id)}
+                    title="Удалить из памяти"
+                  >
+                    ✕
+                  </button>
+                </div>
+                <div className="mem-fact-text">{f.text}</div>
+                {f.tags && (
+                  <div className="mem-fact-tags">
+                    {f.tags.split(",").map((t) => (
+                      <span key={t} className="mem-fact-tag">
+                        {t.trim()}
+                      </span>
+                    ))}
+                  </div>
                 )}
               </div>
-              {e.user_text && (
-                <div className="mem-ep-line you">
-                  <span className="mem-ep-tag">YOU</span> {e.user_text}
-                </div>
-              )}
-              {e.jarvis_text && (
-                <div className="mem-ep-line jarvis">
-                  <span className="mem-ep-tag">JARVIS</span> {e.jarvis_text}
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

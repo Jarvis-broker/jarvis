@@ -178,7 +178,7 @@ const KNOWN_ICONS: Record<string, string> = {
   datadog: "datadog", sentry: "sentry", pagerduty: "pagerduty",
   mixpanel: "mixpanel", amplitude: "amplitude", segment: "segment",
   quickbooks: "quickbooks", xero: "xero", freshdesk: "freshdesk",
-  pipedrive: "pipedrive", typeform: "typeform", surveymonkey: "surveymonkey",
+  pipedrive: "pipedrive", pipedream: "pipedream", typeform: "typeform", surveymonkey: "surveymonkey",
   wordpress: "wordpress", webflow: "webflow", spotify: "spotify",
   twitch: "twitch", medium: "medium", hackernews: "ycombinator",
   wikipedia: "wikipedia", openai: "openai", anthropic: "anthropic",
@@ -202,7 +202,7 @@ const POPULAR_SLUGS = new Set([
   "notion", "gmail", "google_calendar", "google_docs", "google_sheets",
   "google_drive", "slack", "github", "linear", "figma", "trello",
   "asana", "airtable", "todoist", "hubspot", "salesforce", "stripe",
-  "shopify", "discord", "zoom", "jira", "clickup",
+  "shopify", "discord", "zoom", "jira", "clickup", "pipedream",
 ]);
 
 // ──────────────────────────────────────────────────────────────
@@ -329,6 +329,16 @@ export const FALLBACK_CATALOG: IntegrationDef[] = [
     logo: si("hubspot"), color: "#FF7A59", category: "crm",
     auth: "oauth2", popular: true, composioSlug: "hubspot",
   },
+  {
+    slug: "pipedream", name: "Pipedream",
+    description: "2800+ API и 10000+ инструментов через единый MCP-сервер",
+    logo: si("pipedream"), color: "#22C55E", category: "dev",
+    auth: "api_key", popular: true,
+    authFields: [
+      { name: "api_key", label: "Pipedream API Key", placeholder: "pd_..." },
+      { name: "project_id", label: "Project ID", placeholder: "proj_..." },
+    ],
+  },
 ];
 
 // ──────────────────────────────────────────────────────────────
@@ -413,6 +423,55 @@ export async function getComposioSessionStatus(): Promise<{
     return {
       hasSession: resp?.hasSession ?? false,
       mcpUrl: resp?.mcpUrl ?? "",
+    };
+  } catch {
+    return { hasSession: false, mcpUrl: "" };
+  }
+}
+
+// ──────────────────────────────────────────────────────────────
+// Pipedream MCP — 2800+ APIs via remote MCP server
+// ──────────────────────────────────────────────────────────────
+
+/**
+ * Inject a Pipedream MCP server URL into the profile's mcp-servers.json.
+ * Pipedream's remote MCP server provides 2800+ APIs and 10000+ tools.
+ * URL format: https://mcp.pipedream.com/{external_user_id}
+ */
+export async function connectPipedreamMcp(
+  apiKey: string,
+  projectId: string,
+): Promise<void> {
+  // Store Pipedream credentials
+  await invoke("integrations_connect", {
+    slug: "pipedream",
+    composioSlug: null,
+    credentials: {
+      api_key: apiKey,
+      project_id: projectId,
+    },
+  });
+  // Inject the MCP server config
+  await invoke("integrations_inject_mcp_server", {
+    name: "pipedream",
+    transport: "http",
+    url: `https://mcp.pipedream.com`,
+    headers: { "x-pd-api-key": apiKey },
+  });
+}
+
+/** Check if Pipedream MCP is configured. */
+export async function getPipedreamStatus(): Promise<{
+  hasSession: boolean;
+  mcpUrl: string;
+}> {
+  try {
+    const status = (await invoke("integrations_composio_session_status")) as any;
+    // Look for a "pipedream" key in the MCP servers config.
+    const hasPipedream = status?.mcpServers?.pipedream != null;
+    return {
+      hasSession: hasPipedream,
+      mcpUrl: hasPipedream ? (status.mcpServers.pipedream.url ?? "") : "",
     };
   } catch {
     return { hasSession: false, mcpUrl: "" };

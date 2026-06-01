@@ -1766,6 +1766,7 @@ pub fn run() {
             integrations::integrations_fetch_composio_apps,
             integrations::integrations_create_composio_session,
             integrations::integrations_composio_session_status,
+            integrations::integrations_inject_mcp_server,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
