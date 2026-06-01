@@ -1,11 +1,17 @@
 //! Integrations — connection state and credential management.
 //!
 //! Stores which integrations are connected per-profile and manages
-//! credentials (API keys → macOS Keychain via `security` CLI, or local
-//! fallback JSON for non-macOS / dev builds).
+//! credentials as a 0600-permissions local JSON file.
 //!
-//! Connection state lives in `~/.jarvis/profiles/{name}/integrations.json`.
-//! Credentials are stored separately in Keychain to avoid leaking secrets.
+//! **Why NOT macOS Keychain?** Keychain ACLs bind to the app's code signature
+//! (cdhash). Every ad-hoc/dev build produces a different cdhash, causing macOS
+//! to re-prompt "Jarvis wants to access your keychain" on every launch. A plain
+//! owner-only file has no ACL and never prompts. This is the same approach used
+//! by activation.rs.
+//!
+//! Storage layout (per profile):
+//!   `~/.jarvis/profiles/{name}/integrations.json`  — connection state
+//!   `~/.jarvis/profiles/{name}/credentials.json`   — secrets (0600)
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -38,7 +44,7 @@ pub struct IntegrationConnection {
 pub struct IntegrationsState {
     /// Map of slug → connection info
     pub connections: HashMap<String, IntegrationConnection>,
-    /// Composio API key (if the user has set one)
+    /// Marker that Composio API key is set (actual key in credentials.json)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub composio_api_key: Option<String>,
 }
@@ -56,29 +62,42 @@ pub struct IntegrationStatus {
 // ──────────────────────────────────────────────────────────────
 
 pub struct IntegrationsManager {
-    inner: Arc<RwLock<IntegrationsState>>,
+    pub(crate) inner: Arc<RwLock<IntegrationsState>>,
     config_path: PathBuf,
+    pub(crate) creds_path: PathBuf,
 }
 
 impl IntegrationsManager {
     pub fn new() -> Self {
-        let config = integrations_config_path()
+        let (config, creds) = integration_paths()
             .unwrap_or_else(|_| {
                 let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-                format!("{}/.jarvis/integrations.json", home)
+                (
+                    format!("{}/.jarvis/integrations.json", home),
+                    format!("{}/.jarvis/credentials.json", home),
+                )
             });
-        let path = PathBuf::from(&config);
-        let state = load_state(&path).unwrap_or_default();
+        let config_path = PathBuf::from(&config);
+        let creds_path = PathBuf::from(&creds);
+        let state = load_state(&config_path).unwrap_or_default();
+
+        // One-time migration: Keychain → file-based credential store.
+        migrate_keychain_to_file(&creds_path, &state);
+
         Self {
             inner: Arc::new(RwLock::new(state)),
-            config_path: path,
+            config_path,
+            creds_path,
         }
     }
 }
 
-fn integrations_config_path() -> Result<String, String> {
+fn integration_paths() -> Result<(String, String), String> {
     let profile_root = crate::profiles::profile_root()?;
-    Ok(format!("{}/integrations.json", profile_root))
+    Ok((
+        format!("{}/integrations.json", profile_root),
+        format!("{}/credentials.json", profile_root),
+    ))
 }
 
 fn load_state(path: &PathBuf) -> Option<IntegrationsState> {
@@ -100,51 +119,103 @@ fn save_state(path: &PathBuf, state: &IntegrationsState) -> Result<(), String> {
 }
 
 // ──────────────────────────────────────────────────────────────
-// Keychain helpers (macOS)
+// File-based credential store (replaces Keychain)
+//
+// Stores all secrets in a single JSON file per profile with
+// owner-only (0600) permissions. No ACL binding, no prompts.
 // ──────────────────────────────────────────────────────────────
 
-const KEYCHAIN_SERVICE: &str = "ai.jarvis.integrations";
+/// All credentials for one profile — flat key→value map.
+type CredentialStore = HashMap<String, String>;
 
-/// Store a credential in macOS Keychain.
-fn keychain_set(key: &str, value: &str) -> Result<(), String> {
-    // Delete existing entry first (ignore failure if it doesn't exist).
-    let _ = std::process::Command::new("security")
-        .args(["delete-generic-password", "-s", KEYCHAIN_SERVICE, "-a", key])
-        .output();
+/// Read the credential store from disk.
+fn creds_load(path: &PathBuf) -> CredentialStore {
+    if !path.exists() {
+        return HashMap::new();
+    }
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|data| serde_json::from_str(&data).ok())
+        .unwrap_or_default()
+}
 
-    let out = std::process::Command::new("security")
-        .args([
-            "add-generic-password",
-            "-s", KEYCHAIN_SERVICE,
-            "-a", key,
-            "-w", value,
-            "-U",
-        ])
-        .output()
-        .map_err(|e| format!("keychain set: {}", e))?;
+/// Write the credential store to disk with 0600 permissions.
+fn creds_save(path: &PathBuf, store: &CredentialStore) -> Result<(), String> {
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let json = serde_json::to_string_pretty(store)
+        .map_err(|e| format!("creds serialize: {}", e))?;
+    write_private(path, &json)
+}
 
-    if out.status.success() {
-        Ok(())
-    } else {
-        Err(format!(
-            "keychain set failed: {}",
-            String::from_utf8_lossy(&out.stderr)
-        ))
+/// Write a file with owner-only (0600) permissions so other users can't read it.
+#[cfg(unix)]
+fn write_private(path: &PathBuf, content: &str) -> Result<(), String> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)
+        .map_err(|e| format!("creds open {:?}: {}", path, e))?;
+    f.write_all(content.as_bytes())
+        .map_err(|e| format!("creds write: {}", e))
+}
+
+#[cfg(not(unix))]
+fn write_private(path: &PathBuf, content: &str) -> Result<(), String> {
+    std::fs::write(path, content)
+        .map_err(|e| format!("creds write: {}", e))
+}
+
+/// Set a credential value.
+fn cred_set(path: &PathBuf, key: &str, value: &str) -> Result<(), String> {
+    let mut store = creds_load(path);
+    store.insert(key.to_string(), value.to_string());
+    creds_save(path, &store)
+}
+
+/// Get a credential value.
+fn cred_get(path: &PathBuf, key: &str) -> Option<String> {
+    let store = creds_load(path);
+    store.get(key).cloned()
+}
+
+/// Delete a credential value.
+fn cred_delete(path: &PathBuf, key: &str) {
+    let mut store = creds_load(path);
+    if store.remove(key).is_some() {
+        let _ = creds_save(path, &store);
     }
 }
 
-/// Retrieve a credential from macOS Keychain.
-fn keychain_get(key: &str) -> Option<String> {
+/// Build the credential key for a field: "slug.field_name"
+fn credential_key(slug: &str, field: &str) -> String {
+    format!("{}.{}", slug, field)
+}
+
+// ──────────────────────────────────────────────────────────────
+// Migration: Keychain → file store
+//
+// On first run after this update, try to read credentials from
+// macOS Keychain and copy them to the file store. This prevents
+// users from losing their existing API keys.
+// ──────────────────────────────────────────────────────────────
+
+/// Try to read a credential from macOS Keychain (legacy).
+fn keychain_get_legacy(key: &str) -> Option<String> {
     let out = std::process::Command::new("security")
         .args([
             "find-generic-password",
-            "-s", KEYCHAIN_SERVICE,
+            "-s", "ai.jarvis.integrations",
             "-a", key,
             "-w",
         ])
         .output()
         .ok()?;
-
     if out.status.success() {
         Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
     } else {
@@ -152,17 +223,52 @@ fn keychain_get(key: &str) -> Option<String> {
     }
 }
 
-/// Delete a credential from macOS Keychain.
-fn keychain_delete(key: &str) -> Result<(), String> {
+/// Delete a legacy Keychain entry.
+fn keychain_delete_legacy(key: &str) {
     let _ = std::process::Command::new("security")
-        .args(["delete-generic-password", "-s", KEYCHAIN_SERVICE, "-a", key])
+        .args([
+            "delete-generic-password",
+            "-s", "ai.jarvis.integrations",
+            "-a", key,
+        ])
         .output();
-    Ok(())
 }
 
-/// Build the Keychain account key for a field: "slug.field_name"
-fn credential_key(slug: &str, field: &str) -> String {
-    format!("{}.{}", slug, field)
+/// Migrate credentials from Keychain to file store for a set of known keys.
+fn migrate_keychain_to_file(creds_path: &PathBuf, state: &IntegrationsState) {
+    let mut migrated = 0u32;
+    let mut store = creds_load(creds_path);
+
+    // Migrate Composio API key.
+    if !store.contains_key("composio_api_key") {
+        if let Some(val) = keychain_get_legacy("composio_api_key") {
+            store.insert("composio_api_key".to_string(), val);
+            keychain_delete_legacy("composio_api_key");
+            migrated += 1;
+        }
+    }
+
+    // Migrate per-integration credentials.
+    for conn in state.connections.values() {
+        for field in &conn.auth_fields {
+            let key = credential_key(&conn.slug, field);
+            if !store.contains_key(&key) {
+                if let Some(val) = keychain_get_legacy(&key) {
+                    store.insert(key.clone(), val);
+                    keychain_delete_legacy(&key);
+                    migrated += 1;
+                }
+            }
+        }
+    }
+
+    if migrated > 0 {
+        if let Err(e) = creds_save(creds_path, &store) {
+            eprintln!("[integrations] migration save failed: {}", e);
+        } else {
+            eprintln!("[integrations] migrated {} credentials from Keychain to file store", migrated);
+        }
+    }
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -196,11 +302,11 @@ pub async fn integrations_connect(
     composio_slug: Option<String>,
     credentials: HashMap<String, String>,
 ) -> Result<(), String> {
-    // Store each credential in Keychain.
+    // Store each credential in the file store.
     let mut field_names = Vec::new();
     for (field, value) in &credentials {
         let key = credential_key(&slug, field);
-        keychain_set(&key, value)?;
+        cred_set(&manager.creds_path, &key, value)?;
         field_names.push(field.clone());
     }
 
@@ -229,11 +335,11 @@ pub async fn integrations_disconnect(
 ) -> Result<(), String> {
     let mut state = manager.inner.write().await;
 
-    // Remove credentials from Keychain.
+    // Remove credentials from file store.
     if let Some(conn) = state.connections.get(&slug) {
         for field in &conn.auth_fields {
             let key = credential_key(&slug, field);
-            let _ = keychain_delete(&key);
+            cred_delete(&manager.creds_path, &key);
         }
     }
 
@@ -245,11 +351,12 @@ pub async fn integrations_disconnect(
 /// Get a stored credential value for an integration.
 #[tauri::command]
 pub async fn integrations_get_credential(
+    manager: tauri::State<'_, IntegrationsManager>,
     slug: String,
     field: String,
 ) -> Result<Option<String>, String> {
     let key = credential_key(&slug, &field);
-    Ok(keychain_get(&key))
+    Ok(cred_get(&manager.creds_path, &key))
 }
 
 /// Set the Composio API key.
@@ -258,17 +365,19 @@ pub async fn integrations_set_composio_key(
     manager: tauri::State<'_, IntegrationsManager>,
     api_key: String,
 ) -> Result<(), String> {
-    keychain_set("composio_api_key", &api_key)?;
+    cred_set(&manager.creds_path, "composio_api_key", &api_key)?;
     let mut state = manager.inner.write().await;
-    state.composio_api_key = Some("***".to_string()); // Don't store the actual key in JSON
+    state.composio_api_key = Some("set".to_string()); // Marker only — real key in credentials.json
     save_state(&manager.config_path, &state)?;
     Ok(())
 }
 
-/// Get the Composio API key from Keychain.
+/// Get the Composio API key.
 #[tauri::command]
-pub async fn integrations_get_composio_key() -> Result<Option<String>, String> {
-    Ok(keychain_get("composio_api_key"))
+pub async fn integrations_get_composio_key(
+    manager: tauri::State<'_, IntegrationsManager>,
+) -> Result<Option<String>, String> {
+    Ok(cred_get(&manager.creds_path, "composio_api_key"))
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -281,8 +390,9 @@ const COMPOSIO_API_BASE: &str = "https://backend.composio.dev/api";
 /// Returns a JSON array of app objects (key, name, description, logo, categories).
 #[tauri::command]
 pub async fn integrations_fetch_composio_apps(
+    manager: tauri::State<'_, IntegrationsManager>,
 ) -> Result<Value, String> {
-    let api_key = keychain_get("composio_api_key")
+    let api_key = cred_get(&manager.creds_path, "composio_api_key")
         .ok_or_else(|| "Composio API key не найден. Введите его в настройках.".to_string())?;
 
     // Fetch all apps — Composio v1 endpoint (paginated, get all)
@@ -303,8 +413,9 @@ pub async fn integrations_fetch_composio_apps(
 /// The session is tied to `user_id = profile_name`, isolating OAuth connections.
 #[tauri::command]
 pub async fn integrations_create_composio_session(
+    manager: tauri::State<'_, IntegrationsManager>,
 ) -> Result<Value, String> {
-    let api_key = keychain_get("composio_api_key")
+    let api_key = cred_get(&manager.creds_path, "composio_api_key")
         .ok_or_else(|| "Composio API key не найден".to_string())?;
 
     // Use profile name as user_id for isolation.
@@ -428,6 +539,5 @@ fn chrono_now() -> String {
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap_or_default();
     let secs = d.as_secs();
-    // Simple ISO-ish format without pulling in chrono crate.
     format!("{}", secs)
 }
