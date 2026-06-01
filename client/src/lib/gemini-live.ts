@@ -34,6 +34,10 @@ export interface LiveOptions {
   onTurnComplete: () => void;
   onError: (err: Error) => void;
   onClose?: () => void;
+  /** If true, automatically reconnect on unexpected disconnects (default: true). */
+  autoReconnect?: boolean;
+  /** Called when auto-reconnect succeeds. */
+  onReconnected?: () => void;
 }
 
 export class GeminiLiveSession {
@@ -44,6 +48,10 @@ export class GeminiLiveSession {
   // either incremental chunks OR cumulative snapshots — we handle both.
   private inText = "";
   private outText = "";
+  // Auto-reconnect state
+  private intentionalClose = false;
+  private reconnectAttempt = 0;
+  private reconnectTimer?: ReturnType<typeof setTimeout>;
 
   constructor(opts: LiveOptions) {
     this.opts = opts;
@@ -53,7 +61,13 @@ export class GeminiLiveSession {
     } as any);
   }
 
+  /** Whether auto-reconnect is enabled (default true). */
+  private get autoReconnect(): boolean {
+    return this.opts.autoReconnect !== false;
+  }
+
   async connect(): Promise<void> {
+    this.intentionalClose = false;
     this.session = await this.client.live.connect({
       model: this.opts.model,
       config: {
@@ -102,6 +116,10 @@ export class GeminiLiveSession {
             );
           }
           this.opts.onClose?.();
+          // Auto-reconnect on unexpected disconnect
+          if (!this.intentionalClose && this.autoReconnect) {
+            this.scheduleReconnect();
+          }
         },
       },
     });
@@ -163,12 +181,49 @@ export class GeminiLiveSession {
   }
 
   close() {
+    this.intentionalClose = true;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = undefined;
+    }
     try {
       this.session?.close();
     } catch {
       /* ignore */
     }
     this.session = undefined;
+  }
+
+  /** Exponential backoff reconnect: 1s, 2s, 4s, 8s, max 30s. Up to 5 attempts. */
+  private scheduleReconnect() {
+    const MAX_ATTEMPTS = 5;
+    if (this.reconnectAttempt >= MAX_ATTEMPTS) {
+      this.opts.onError(
+        new Error(`Auto-reconnect failed after ${MAX_ATTEMPTS} attempts`),
+      );
+      return;
+    }
+    const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempt), 30_000);
+    this.reconnectAttempt++;
+    console.warn(
+      `[gemini-live] reconnect attempt ${this.reconnectAttempt}/${MAX_ATTEMPTS} in ${delay}ms`,
+    );
+    this.reconnectTimer = setTimeout(async () => {
+      this.reconnectTimer = undefined;
+      try {
+        await this.connect();
+        this.reconnectAttempt = 0;
+        this.opts.onReconnected?.();
+      } catch (e: any) {
+        this.opts.onError(
+          new Error(`Reconnect failed: ${e?.message ?? e}`),
+        );
+        // Try again with backoff
+        if (!this.intentionalClose) {
+          this.scheduleReconnect();
+        }
+      }
+    }, delay);
   }
 
   private async handleMessage(msg: any) {

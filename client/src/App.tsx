@@ -281,7 +281,12 @@ function App() {
       onError: (e) => addMessage("error", e.message),
       onClose: () => {
         setConnected(false);
-        addMessage("error", "Gemini Live: disconnected");
+        addMessage("error", "Gemini Live: disconnected — reconnecting…");
+      },
+      autoReconnect: true,
+      onReconnected: () => {
+        setConnected(true);
+        addMessage("tool", "reconnected to Gemini Live");
       },
     });
     sessionRef.current = session;

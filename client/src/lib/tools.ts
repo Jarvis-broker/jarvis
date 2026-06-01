@@ -4,9 +4,11 @@ import * as mem from "./memory";
 import {
   getMcpDeclarations,
   callMcpTool,
+  fetchMcpTools,
   mergeDeclarations,
   type GeminiFunctionDeclaration,
 } from "./mcp-bridge";
+import { useStore } from "./store";
 
 export const TOOL_DECLARATIONS: any[] = [
   {
@@ -56,6 +58,19 @@ export const TOOL_DECLARATIONS: any[] = [
       type: "object",
       properties: { id: { type: "string" } },
       required: ["id"],
+    },
+  },
+  {
+    name: "memory_episodes",
+    description:
+      "Search conversation history / past episodes. Use when the user asks 'помнишь мы говорили…', 'что мы обсуждали вчера', etc. Period: 'today', 'yesterday', 'week', 'month'.",
+    parameters: {
+      type: "object",
+      properties: {
+        period: { type: "string", description: "today | yesterday | week | month" },
+        query: { type: "string", description: "Optional search query within episodes" },
+        limit: { type: "integer" },
+      },
     },
   },
   {
@@ -230,10 +245,16 @@ export async function getToolDeclarations(): Promise<GeminiFunctionDeclaration[]
 // =========================================================
 
 let _searchClient: GoogleGenAI | null = null;
+let _searchClientKey: string | null = null;
 function searchClient(): GoogleGenAI {
-  if (_searchClient) return _searchClient;
-  const apiKey = import.meta.env.VITE_GEMINI_API_KEY as string;
+  // Use runtime API key from settings, fall back to build-time env var.
+  const runtimeKey = useStore.getState().settings.geminiApiKey?.trim();
+  const apiKey = runtimeKey || (import.meta.env.VITE_GEMINI_API_KEY as string);
+  if (!apiKey) throw new Error("Gemini API key not configured — set it in Settings");
+  // Rebuild client if key changed.
+  if (_searchClient && _searchClientKey === apiKey) return _searchClient;
   _searchClient = new GoogleGenAI({ apiKey, apiVersion: "v1beta" } as any);
+  _searchClientKey = apiKey;
   return _searchClient;
 }
 
@@ -286,6 +307,10 @@ export async function dispatchTool(
         return await mem.searchAll(args.query, args.top ?? 10);
       case "memory_forget":
         return await mem.forget(args.id);
+      case "memory_episodes":
+        return await invoke("episode_recent", {
+          limit: args.limit ?? 20,
+        });
       case "index_vault": {
         // Long-running. Stream progress to console; Gemini gets final summary.
         const result = await mem.indexVault((p) => {
@@ -385,9 +410,46 @@ export async function dispatchTool(
         if (name.includes(".")) {
           return await callMcpTool(name, args);
         }
+        // Phase 3 fallback: the LLM may call un-namespaced MCP tool names
+        // (e.g. "weather" instead of "jarvis-mac.weather") because the system
+        // prompt references them without namespace. Try to find a matching MCP
+        // tool and route through the host.
+        {
+          const resolved = await resolveMcpFallback(name);
+          if (resolved) {
+            return await callMcpTool(resolved, args);
+          }
+        }
         return { error: `Unknown tool: ${name}` };
     }
   } catch (e: any) {
     return { error: String(e?.message ?? e) };
   }
+}
+
+// ── MCP fallback resolution ──────────────────────────────────
+// Cache of MCP tool qualified names, keyed by bare name.
+let _mcpToolIndex: Map<string, string> | null = null;
+let _mcpToolIndexTs = 0;
+
+async function resolveMcpFallback(bareName: string): Promise<string | null> {
+  const now = Date.now();
+  // Rebuild index every 60s or on first call.
+  if (!_mcpToolIndex || now - _mcpToolIndexTs > 60_000) {
+    try {
+      const tools = await fetchMcpTools();
+      const idx = new Map<string, string>();
+      for (const t of tools) {
+        // t.qualified_name = "jarvis-mac.weather", t.name = "weather"
+        if (t.name && t.qualified_name) {
+          idx.set(t.name, t.qualified_name);
+        }
+      }
+      _mcpToolIndex = idx;
+      _mcpToolIndexTs = now;
+    } catch {
+      return null;
+    }
+  }
+  return _mcpToolIndex.get(bareName) ?? null;
 }
