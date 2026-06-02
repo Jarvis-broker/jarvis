@@ -68,6 +68,9 @@ export class GeminiLiveSession {
 
   async connect(): Promise<void> {
     this.intentionalClose = false;
+    import("./telemetry").then((t) =>
+      t.trackVoice("session_connect", { model: this.opts.model }),
+    );
     this.session = await this.client.live.connect({
       model: this.opts.model,
       config: {
@@ -103,7 +106,11 @@ export class GeminiLiveSession {
               parts.push(String(e));
             }
           }
-          this.opts.onError(new Error(`Gemini Live: ${parts.join(" · ")}`));
+          const errMsg = `Gemini Live: ${parts.join(" · ")}`;
+          import("./telemetry").then((t) =>
+            t.trackVoice("session_error", { error: errMsg }),
+          );
+          this.opts.onError(new Error(errMsg));
         },
         onclose: (ev: any) => {
           this.session = undefined;
@@ -182,6 +189,7 @@ export class GeminiLiveSession {
 
   close() {
     this.intentionalClose = true;
+    import("./telemetry").then((t) => t.trackVoice("session_close"));
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = undefined;

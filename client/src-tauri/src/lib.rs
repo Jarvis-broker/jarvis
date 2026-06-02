@@ -28,6 +28,7 @@ use activation::{
 mod profiles;
 mod mcp_host;
 mod integrations;
+mod telemetry;
 use mcp_host::McpHostState;
 use integrations::IntegrationsManager;
 
@@ -336,7 +337,9 @@ fn permissions_probe() -> Result<serde_json::Value, String> {
             if ok { "" } else { "System Settings → Privacy & Security → Accessibility → enable Jarvis" },
         );
     }
-    // 2. Screen Recording — try screencapture; if blocked, file is empty/missing
+    // 2. Screen Recording — try screencapture; on Sonoma+ a denied app still
+    //    gets exit 0 but the image is either missing, tiny (< 1 KB = blank
+    //    1×1), or all-black.  We check both existence and minimum file size.
     {
         let tmp = format!(
             "/tmp/jarvis-perm-probe-{}.png",
@@ -349,14 +352,27 @@ fn permissions_probe() -> Result<serde_json::Value, String> {
             .args(["-x", "-t", "png", &tmp])
             .output();
         let ok = out
-            .map(|o| o.status.success() && std::path::Path::new(&tmp).exists())
+            .map(|o| {
+                if !o.status.success() {
+                    return false;
+                }
+                // File must exist and be > 1 KB (a blank/denied capture is
+                // typically < 500 bytes — just a tiny PNG header).
+                std::fs::metadata(&tmp)
+                    .map(|m| m.len() > 1024)
+                    .unwrap_or(false)
+            })
             .unwrap_or(false);
         let _ = std::fs::remove_file(&tmp);
         push(
             &mut results,
             "Screen Recording",
             ok,
-            if ok { "" } else { "System Settings → Privacy & Security → Screen Recording → enable Jarvis" },
+            if ok {
+                ""
+            } else {
+                "System Settings → Privacy & Security → Screen Recording → toggle Jarvis OFF then ON, or click ⟲ Reset & restart below"
+            },
         );
     }
     // 3. Microphone — we already gate via Info.plist + Entitlements; the
@@ -1001,11 +1017,21 @@ async fn take_screenshot() -> Result<serde_json::Value, String> {
     }
 
     if !std::path::Path::new(&temp).exists() {
-        return Err("Screenshot file not created — Screen Recording permission likely denied".to_string());
+        return Err("Screenshot file not created — Screen Recording permission likely denied. \
+            Try: Settings → Permissions → ⟲ Reset & restart, then re-grant in System Settings.".to_string());
     }
 
     let bytes =
         std::fs::read(&temp).map_err(|e| format!("read screenshot failed: {}", e))?;
+
+    // On macOS Sonoma+, a denied screencapture can still produce a tiny blank
+    // PNG (< 1 KB).  Detect this and return a helpful error instead of a black frame.
+    if bytes.len() < 1024 {
+        let _ = std::fs::remove_file(&temp);
+        return Err("Screen Recording permission appears denied (captured image is blank). \
+            Try: Settings → Permissions → ⟲ Reset & restart, then re-grant in System Settings.".to_string());
+    }
+
     let size = bytes.len();
     let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
 
@@ -1664,6 +1690,11 @@ pub fn run() {
             let profile = profiles::active_name();
             let _ = profiles::ensure_profile_dirs(&profile);
 
+            // Telemetry — init ring-buffer + periodic flush thread.
+            let version = app.config().version.clone().unwrap_or_else(|| "0.0.0".into());
+            telemetry::init(&version);
+            telemetry::track("perf", "app_launch", "info", None, None, None);
+
             // MCP Host — spawn configured MCP servers in background.
             let mcp_inner = app.state::<McpHostState>().inner_clone();
             tauri::async_runtime::spawn(async move {
@@ -1767,6 +1798,18 @@ pub fn run() {
             integrations::integrations_create_composio_session,
             integrations::integrations_composio_session_status,
             integrations::integrations_inject_mcp_server,
+            // Telemetry
+            telemetry::telemetry_track,
+            telemetry::telemetry_set_enabled,
+            telemetry::telemetry_set_endpoint,
+            telemetry::telemetry_flush,
+            telemetry::telemetry_status,
+            telemetry::telemetry_read_local,
+            telemetry::telemetry_retry_pending,
+            // Skill detail
+            registry::skill_read_content,
+            registry::skill_write_content,
+            registry::skill_list_files,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

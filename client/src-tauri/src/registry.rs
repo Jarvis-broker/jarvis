@@ -696,27 +696,74 @@ pub fn skill_sync_local() -> Result<serde_json::Value, String> {
             continue;
         }
         let text = std::fs::read_to_string(&skill_md).unwrap_or_default();
-        // Light frontmatter scan: capture `name:` and `version:` from YAML header.
+        // Parse frontmatter: name, version, description, tags, when_to_use, permissions.
         let mut sname = name.clone();
         let mut version = "0.0.0".to_string();
-        for line in text.lines().take(40) {
-            if let Some(rest) = line.strip_prefix("name:") {
+        let mut description = String::new();
+        let mut tags: Vec<String> = Vec::new();
+        let mut when_to_use: Vec<String> = Vec::new();
+        let mut permissions: Vec<String> = Vec::new();
+        let mut in_list: Option<&str> = None;
+        let lines: Vec<&str> = text.lines().collect();
+        let mut in_fm = false;
+        for (i, line) in lines.iter().enumerate() {
+            let trimmed = line.trim();
+            if trimmed == "---" {
+                if i == 0 { in_fm = true; continue; }
+                else { break; }
+            }
+            if !in_fm { continue; }
+            // List items
+            if trimmed.starts_with("- ") {
+                let val = trimmed.trim_start_matches("- ").trim().to_string();
+                match in_list {
+                    Some("tags") => tags.push(val),
+                    Some("when_to_use") => when_to_use.push(val),
+                    Some("permissions") => permissions.push(val),
+                    _ => {}
+                }
+                continue;
+            }
+            in_list = None;
+            if let Some(rest) = trimmed.strip_prefix("name:") {
                 sname = rest.trim().trim_matches('"').trim_matches('\'').to_string();
-            } else if let Some(rest) = line.strip_prefix("version:") {
+            } else if let Some(rest) = trimmed.strip_prefix("version:") {
                 version = rest.trim().trim_matches('"').trim_matches('\'').to_string();
+            } else if let Some(rest) = trimmed.strip_prefix("description:") {
+                let v = rest.trim();
+                if v.is_empty() || v == ">" || v == "|" || v == ">-" {
+                    // skip block scalars for now
+                } else {
+                    description = v.trim_matches('"').trim_matches('\'').to_string();
+                }
+            } else if trimmed.starts_with("tags:") {
+                in_list = Some("tags");
+            } else if trimmed.starts_with("when_to_use:") {
+                in_list = Some("when_to_use");
+            } else if trimmed.starts_with("permissions:") {
+                in_list = Some("permissions");
             }
         }
+        let manifest = serde_json::json!({
+            "description": description,
+            "tags": tags,
+            "when_to_use": when_to_use,
+            "permissions": permissions,
+        });
+        let manifest_str = serde_json::to_string(&manifest).unwrap_or_default();
         conn.execute(
             "INSERT INTO skill_registry (name, version, path, enabled, source, installed_at, manifest)
-             VALUES (?, ?, ?, 1, 'local', ?, NULL)
+             VALUES (?, ?, ?, 1, 'local', ?, ?)
              ON CONFLICT(name) DO UPDATE SET
                version=excluded.version,
-               path=excluded.path",
+               path=excluded.path,
+               manifest=excluded.manifest",
             rusqlite::params![
                 sname,
                 version,
                 entry.path().to_string_lossy().to_string(),
-                now
+                now,
+                manifest_str
             ],
         )
         .map_err(|e| e.to_string())?;
@@ -767,4 +814,167 @@ pub fn episode_log_rs(
     )
     .map_err(|e| e.to_string())?;
     Ok(json!({ "ok": true, "ts": now }))
+}
+
+// ── Skill detail commands (Phase: skill config viewer) ──────────────
+
+/// Read the full SKILL.md content for an installed skill.
+#[tauri::command]
+pub fn skill_read_content(name: String) -> Result<serde_json::Value, String> {
+    let conn = match open_ro()? {
+        Some(c) => c,
+        None => return Err("state.db not found".into()),
+    };
+    let path: String = conn
+        .query_row(
+            "SELECT path FROM skill_registry WHERE name = ?",
+            [&name],
+            |r| r.get(0),
+        )
+        .map_err(|_| format!("skill '{}' not found in registry", name))?;
+
+    let skill_md = std::path::Path::new(&path).join("SKILL.md");
+    if !skill_md.is_file() {
+        return Err(format!("SKILL.md not found at {}", skill_md.display()));
+    }
+
+    let content = std::fs::read_to_string(&skill_md).map_err(|e| e.to_string())?;
+
+    // Parse frontmatter
+    let mut frontmatter = serde_json::Map::new();
+    let mut body = content.clone();
+    let lines: Vec<&str> = content.lines().collect();
+    if lines.first().map(|l| l.trim()) == Some("---") {
+        if let Some(end) = lines.iter().skip(1).position(|l| l.trim() == "---") {
+            let fm_lines: Vec<&str> = lines[1..=end].to_vec();
+            body = lines[end + 2..].join("\n");
+            // Simple YAML key-value parser for frontmatter
+            let mut current_key = String::new();
+            let mut current_list: Vec<String> = Vec::new();
+            let mut in_list = false;
+
+            for line in &fm_lines {
+                let trimmed = line.trim();
+                if trimmed == "---" {
+                    continue;
+                }
+                if trimmed.starts_with("- ") && in_list {
+                    current_list.push(trimmed.trim_start_matches("- ").trim().to_string());
+                    continue;
+                }
+                // Flush previous list if we were in one
+                if in_list && !current_key.is_empty() {
+                    let arr: Vec<serde_json::Value> = current_list
+                        .drain(..)
+                        .map(|s| serde_json::Value::String(s))
+                        .collect();
+                    frontmatter.insert(current_key.clone(), serde_json::Value::Array(arr));
+                    in_list = false;
+                }
+                if let Some((key, val)) = trimmed.split_once(':') {
+                    current_key = key.trim().to_string();
+                    let v = val.trim();
+                    if v.is_empty() {
+                        // Could be a list following
+                        in_list = true;
+                        current_list.clear();
+                    } else {
+                        let clean = v.trim_matches('"').trim_matches('\'').to_string();
+                        frontmatter.insert(
+                            current_key.clone(),
+                            serde_json::Value::String(clean),
+                        );
+                    }
+                }
+            }
+            // Flush final list
+            if in_list && !current_key.is_empty() && !current_list.is_empty() {
+                let arr: Vec<serde_json::Value> = current_list
+                    .drain(..)
+                    .map(|s| serde_json::Value::String(s))
+                    .collect();
+                frontmatter.insert(current_key, serde_json::Value::Array(arr));
+            }
+        }
+    }
+
+    Ok(json!({
+        "name": name,
+        "path": path,
+        "content": content,
+        "body": body,
+        "frontmatter": serde_json::Value::Object(frontmatter),
+    }))
+}
+
+/// Write updated SKILL.md content for an installed skill.
+#[tauri::command]
+pub fn skill_write_content(name: String, content: String) -> Result<serde_json::Value, String> {
+    let conn = match open_ro()? {
+        Some(c) => c,
+        None => return Err("state.db not found".into()),
+    };
+    let path: String = conn
+        .query_row(
+            "SELECT path FROM skill_registry WHERE name = ?",
+            [&name],
+            |r| r.get(0),
+        )
+        .map_err(|_| format!("skill '{}' not found in registry", name))?;
+
+    let skill_md = std::path::Path::new(&path).join("SKILL.md");
+    std::fs::write(&skill_md, &content).map_err(|e| e.to_string())?;
+
+    Ok(json!({ "ok": true, "path": skill_md.to_string_lossy() }))
+}
+
+/// List all files inside an installed skill's directory.
+#[tauri::command]
+pub fn skill_list_files(name: String) -> Result<serde_json::Value, String> {
+    let conn = match open_ro()? {
+        Some(c) => c,
+        None => return Err("state.db not found".into()),
+    };
+    let path: String = conn
+        .query_row(
+            "SELECT path FROM skill_registry WHERE name = ?",
+            [&name],
+            |r| r.get(0),
+        )
+        .map_err(|_| format!("skill '{}' not found in registry", name))?;
+
+    let root = std::path::Path::new(&path);
+    let mut files: Vec<serde_json::Value> = Vec::new();
+
+    fn walk(dir: &std::path::Path, root: &std::path::Path, out: &mut Vec<serde_json::Value>) {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                let rel = p.strip_prefix(root).unwrap_or(&p);
+                if p.is_dir() {
+                    walk(&p, root, out);
+                } else {
+                    let size = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
+                    out.push(json!({
+                        "path": rel.to_string_lossy(),
+                        "size_bytes": size,
+                    }));
+                }
+            }
+        }
+    }
+
+    walk(root, root, &mut files);
+    files.sort_by(|a, b| {
+        a["path"]
+            .as_str()
+            .unwrap_or("")
+            .cmp(b["path"].as_str().unwrap_or(""))
+    });
+
+    Ok(json!({
+        "name": name,
+        "root": path,
+        "files": files,
+    }))
 }

@@ -3457,3 +3457,296 @@ select,
   font-weight: 700;
   flex-shrink: 0;
 }
+
+/* ── Skill Detail Drawer ─────────────────────────────────────── */
+
+.skill-detail-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(4px);
+  z-index: 2000;
+  display: flex;
+  justify-content: flex-end;
+  animation: fadeIn 0.2s ease;
+}
+
+.skill-detail-drawer {
+  width: min(520px, 90vw);
+  height: 100%;
+  background: var(--bg-main, #0d1117);
+  border-left: 1px solid rgba(0, 255, 170, 0.15);
+  display: flex;
+  flex-direction: column;
+  animation: slideInRight 0.25s ease;
+  overflow: hidden;
+}
+
+@keyframes slideInRight {
+  from { transform: translateX(100%); }
+  to   { transform: translateX(0); }
+}
+
+.skill-detail-header {
+  padding: 20px 20px 12px;
+  border-bottom: 1px solid rgba(0, 255, 170, 0.08);
+}
+
+.skill-detail-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.skill-detail-name {
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  font-size: 18px;
+  color: var(--cyan, #00ffaa);
+  margin: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.skill-detail-desc {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.55);
+  margin: 6px 0 0;
+  line-height: 1.5;
+}
+
+.skill-detail-tabs {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid rgba(0, 255, 170, 0.08);
+  padding: 0 16px;
+}
+
+.skill-detail-tab {
+  background: none;
+  border: none;
+  color: rgba(255, 255, 255, 0.4);
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 10px 14px;
+  cursor: pointer;
+  position: relative;
+  transition: color 0.2s;
+}
+
+.skill-detail-tab:hover {
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.skill-detail-tab.active {
+  color: var(--cyan, #00ffaa);
+}
+
+.skill-detail-tab.active::after {
+  content: '';
+  position: absolute;
+  bottom: -1px;
+  left: 14px;
+  right: 14px;
+  height: 2px;
+  background: var(--cyan, #00ffaa);
+  border-radius: 1px;
+}
+
+.skill-detail-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 20px;
+}
+
+/* Overview tab */
+.skill-fm-section {
+  margin-bottom: 20px;
+}
+
+.skill-fm-label {
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--cyan, #00ffaa);
+  margin: 0 0 8px;
+  opacity: 0.7;
+}
+
+.skill-fm-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.skill-fm-table td {
+  padding: 5px 8px;
+  font-size: 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  vertical-align: top;
+}
+
+.skill-fm-key {
+  color: rgba(255, 255, 255, 0.4);
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  width: 100px;
+  white-space: nowrap;
+}
+
+.skill-fm-val {
+  color: rgba(255, 255, 255, 0.8);
+  word-break: break-all;
+}
+
+.skill-fm-path {
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  font-size: 10px;
+  opacity: 0.5;
+}
+
+.skill-when-list,
+.skill-perm-list {
+  margin: 0;
+  padding: 0 0 0 16px;
+  list-style: none;
+}
+
+.skill-when-list li,
+.skill-perm-list li {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.65);
+  padding: 3px 0;
+  position: relative;
+}
+
+.skill-when-list li::before {
+  content: '→';
+  position: absolute;
+  left: -14px;
+  color: var(--cyan, #00ffaa);
+  opacity: 0.5;
+}
+
+.skill-perm-icon {
+  font-size: 11px;
+  margin-right: 4px;
+}
+
+.skill-body-preview {
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  font-size: 11px;
+  line-height: 1.6;
+  color: rgba(255, 255, 255, 0.5);
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 6px;
+  padding: 12px;
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+/* Content tab */
+.skill-content-actions {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.skill-content-view {
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  font-size: 11px;
+  line-height: 1.6;
+  color: rgba(255, 255, 255, 0.7);
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 6px;
+  padding: 14px;
+  overflow-y: auto;
+  max-height: calc(100vh - 220px);
+}
+
+.skill-content-editor {
+  width: 100%;
+  min-height: calc(100vh - 240px);
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  font-size: 11px;
+  line-height: 1.6;
+  color: rgba(255, 255, 255, 0.85);
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(0, 255, 170, 0.2);
+  border-radius: 6px;
+  padding: 14px;
+  resize: vertical;
+}
+
+.skill-content-editor:focus {
+  outline: none;
+  border-color: rgba(0, 255, 170, 0.4);
+  box-shadow: 0 0 12px rgba(0, 255, 170, 0.08);
+}
+
+/* Files tab */
+.skill-files-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.skill-files-table th {
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: rgba(255, 255, 255, 0.3);
+  text-align: left;
+  padding: 6px 8px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.skill-files-table td {
+  padding: 5px 8px;
+  font-size: 11px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+}
+
+.skill-file-path {
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  color: rgba(255, 255, 255, 0.65);
+}
+
+.skill-file-size {
+  color: rgba(255, 255, 255, 0.35);
+  text-align: right;
+  white-space: nowrap;
+}
+
+.skill-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.skill-tag {
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: 3px;
+  background: rgba(0, 255, 170, 0.08);
+  color: var(--cyan, #00ffaa);
+  border: 1px solid rgba(0, 255, 170, 0.15);
+}
+
+.skill-card.clickable {
+  cursor: pointer;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.skill-card.clickable:hover {
+  border-color: rgba(0, 255, 170, 0.3);
+  box-shadow: 0 2px 12px rgba(0, 255, 170, 0.08);
+}

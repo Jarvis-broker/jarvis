@@ -295,6 +295,25 @@ export async function dispatchTool(
   name: string,
   args: Record<string, any>,
 ): Promise<any> {
+  const _t0 = performance.now();
+  try {
+    const result = await _dispatchToolInner(name, args);
+    const _dt = Math.round(performance.now() - _t0);
+    import("./telemetry").then((t) => t.trackToolCall(name, _dt, true));
+    return result;
+  } catch (err: any) {
+    const _dt = Math.round(performance.now() - _t0);
+    import("./telemetry").then((t) =>
+      t.trackToolCall(name, _dt, false, err?.message ?? String(err)),
+    );
+    throw err;
+  }
+}
+
+async function _dispatchToolInner(
+  name: string,
+  args: Record<string, any>,
+): Promise<any> {
   try {
     switch (name) {
       // Memory & search — TS-side embeddings (transformers.js WASM) +

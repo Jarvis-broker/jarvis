@@ -9,6 +9,7 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listSkills, type SkillRow } from "../lib/registry-client";
+import { SkillDetailDrawer } from "./SkillDetailDrawer";
 
 interface Props {
   open: boolean;
@@ -64,6 +65,7 @@ export function SkillsPanel({ open, onClose, embedded = false }: Props) {
     }
   };
 
+  const [selectedSkill, setSelectedSkill] = useState<string | null>(null);
   const [installPath, setInstallPath] = useState("");
   const install = async () => {
     const trimmed = installPath.trim();
@@ -206,7 +208,12 @@ export function SkillsPanel({ open, onClose, embedded = false }: Props) {
           {skills.map((s) => {
             const m = s.manifest ?? {};
             return (
-              <div key={s.name} className="skill-card">
+              <div
+                key={s.name}
+                className="skill-card clickable"
+                onClick={() => setSelectedSkill(s.name)}
+                title="Click to view skill details"
+              >
                 <div className="skill-card-head">
                   <div className="skill-card-title">
                     <span className="skill-name">{s.name}</span>
@@ -269,10 +276,26 @@ export function SkillsPanel({ open, onClose, embedded = false }: Props) {
       </div>
   );
 
-  if (embedded) return inner;
+  if (embedded) return (
+    <>
+      {inner}
+      {selectedSkill && (
+        <SkillDetailDrawer
+          skillName={selectedSkill}
+          onClose={() => setSelectedSkill(null)}
+        />
+      )}
+    </>
+  );
   return (
     <div className="settings-overlay" onClick={onClose}>
       {inner}
+      {selectedSkill && (
+        <SkillDetailDrawer
+          skillName={selectedSkill}
+          onClose={() => setSelectedSkill(null)}
+        />
+      )}
     </div>
   );
 }

@@ -14,6 +14,7 @@ import { MemoryView } from "./components/MemoryView";
 import { CentralControls } from "./components/CentralControls";
 import { AgentsView } from "./components/AgentsView";
 import { IntegrationsPanel } from "./components/IntegrationsPanel";
+import { initTelemetry, trackNav, trackAction } from "./lib/telemetry";
 import {
   ReactPipeline,
   type PipelineStage,
@@ -120,6 +121,11 @@ function App() {
   useEffect(() => {
     muteRef.current = mute;
   }, [mute]);
+
+  // Initialize telemetry on first mount.
+  useEffect(() => {
+    initTelemetry();
+  }, []);
 
   // One-time silent update check on launch. If a newer version is published,
   // tell the user in the transcript; the actual install is user-triggered from
@@ -705,7 +711,7 @@ function App() {
 
   return (
     <main className="app jarvis-hud">
-      <TopBar view={view} onViewChange={setView} />
+      <TopBar view={view} onViewChange={(v) => { setView(v); trackNav(v); }} />
 
       {view === "main" && (
         <div className="view-main">
