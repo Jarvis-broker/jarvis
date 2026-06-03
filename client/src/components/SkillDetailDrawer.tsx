@@ -159,7 +159,7 @@ export function SkillDetailDrawer({ skillName, onClose }: Props) {
                         {(fm.name as string) || skillName}
                       </td>
                     </tr>
-                    {fm.version && (
+                    {!!fm.version && (
                       <tr>
                         <td className="skill-fm-key">version</td>
                         <td className="skill-fm-val">
@@ -173,7 +173,7 @@ export function SkillDetailDrawer({ skillName, onClose }: Props) {
                         <td className="skill-fm-val">{description}</td>
                       </tr>
                     )}
-                    {fm.key && (
+                    {!!fm.key && (
                       <tr>
                         <td className="skill-fm-key">key</td>
                         <td className="skill-fm-val">{fm.key as string}</td>

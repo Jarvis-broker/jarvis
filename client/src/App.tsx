@@ -14,7 +14,7 @@ import { MemoryView } from "./components/MemoryView";
 import { CentralControls } from "./components/CentralControls";
 import { AgentsView } from "./components/AgentsView";
 import { IntegrationsPanel } from "./components/IntegrationsPanel";
-import { initTelemetry, trackNav, trackAction } from "./lib/telemetry";
+import { initTelemetry, trackNav } from "./lib/telemetry";
 import {
   ReactPipeline,
   type PipelineStage,
